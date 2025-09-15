@@ -1,32 +1,91 @@
-# Prerequisites
+## Prerequisites
+#*.d
+#
+## Compiled Object files
+#*.slo
+#*.lo
+#*.o
+#*.obj
+#
+## Precompiled Headers
+#*.gch
+#*.pch
+#
+## Compiled Dynamic libraries
+#*.so
+#*.dylib
+#*.dll
+#
+## Fortran module files
+#*.mod
+#*.smod
+#
+## Compiled Static libraries
+#*.lai
+#*.la
+#*.a
+#*.lib
+#
+## Executables
+#*.exe
+#*.out
+#*.app
+
+*_d_obj
+*_r_obj
+
+/.tests
+
+/.vs
+/deploy
+/build
+/tests
+/contrib/emsdk_version_*_prepared
+
 *.d
+*.zip
+/contrib/apache-maven
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+/src/gen
 
-# Precompiled Headers
-*.gch
-*.pch
+/sys
+/prj/*/*/*
+/workspaces/*/*
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
 
-# Fortran module files
-*.mod
-*.smod
+!/prj/*/*_qt/*.pri
+!/prj/*/*_qt/*.pro
+!/prj/*/*_qt/platform
+#/prj/*/*_qt/platform/android/manifest/res
+#
+!/prj/*/*_vs/*.sln
+!/prj/*/*_vs/*.vcxproj
+!/prj/*/*_vs/*.vcxproj.filters
+!/prj/*/*_vs/*.props
+#
+!/prj/*/*_mkfl/*Makefile*
+!/prj/*/*_mkfl/raw
+#
+!/prj/*/*_mult/*Makefile
+!/prj/*/*_mult/*.sln
+!/prj/*/*_mult/*.vcxproj
+!/prj/*/*_mult/*.vcxproj.filters
+!/prj/*/*_mult/packages.config
+!/prj/*/*_mult/*.pro
 
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
+!/workspaces/*_qt/*.pri
+!/workspaces/*_qt/*.pro
+#
+!/workspaces/*_vs/*.sln
+!/workspaces/*_vs/*.vcxproj
+!/workspaces/*_vs/*.vcxproj.filters
+#
+!/workspaces/*_mkfl/*Makefile*
 
-# Executables
-*.exe
-*.out
-*.app
+#/scripts/test_include_sourse.sh
+
+prj/tests/googletest_mult/Makefile.googletest_getter
+
+/.private
+
+*.cpp.autosave

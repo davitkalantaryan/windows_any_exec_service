@@ -1,0 +1,49 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <LocalDebuggerEnvironment>Path=$(MSBuildThisFileDirectory)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\dll;$(MSBuildThisFileDirectory)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\tdll;%Path%
+$(LocalDebuggerEnvironment)</LocalDebuggerEnvironment>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <LocalDebuggerEnvironment>Path=$(MSBuildThisFileDirectory)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\dll;$(MSBuildThisFileDirectory)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\tdll;%Path%
+$(LocalDebuggerEnvironment)</LocalDebuggerEnvironment>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <LocalDebuggerEnvironment>Path=$(MSBuildThisFileDirectory)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\dll;$(MSBuildThisFileDirectory)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\tdll;%Path%
+$(LocalDebuggerEnvironment)</LocalDebuggerEnvironment>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <LocalDebuggerEnvironment>Path=$(MSBuildThisFileDirectory)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\dll;$(MSBuildThisFileDirectory)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\tdll;%Path%
+$(LocalDebuggerEnvironment)</LocalDebuggerEnvironment>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <ImportGroup Label="PropertySheets" />
+  <PropertyGroup Label="UserMacros">
+    <winExeToServiceRepoRoot>$(MSBuildThisFileDirectory)..\..\..</winExeToServiceRepoRoot>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <PreBuildEvent>
+      <Command>
+      </Command>
+    </PreBuildEvent>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\..\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(MSBuildThisFileDirectory)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\lib;$(MSBuildThisFileDirectory)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\tlib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>
+      </AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <BuildMacro Include="winExeToServiceRepoRoot">
+      <Value>$(winExeToServiceRepoRoot)</Value>
+      <EnvironmentVariable>true</EnvironmentVariable>
+    </BuildMacro>
+  </ItemGroup>
+</Project>
