@@ -35,5 +35,20 @@
     <None Include="..\..\..\scripts\install_service.bat">
       <Filter>repo_files\scripts</Filter>
     </None>
+    <None Include="..\..\..\.gitattributes">
+      <Filter>repo_files</Filter>
+    </None>
+    <None Include="..\..\..\.gitignore">
+      <Filter>repo_files</Filter>
+    </None>
+    <None Include="..\..\..\.gitmodules">
+      <Filter>repo_files</Filter>
+    </None>
+    <None Include="..\..\..\LICENSE">
+      <Filter>repo_files</Filter>
+    </None>
+    <None Include="..\..\..\README.md">
+      <Filter>repo_files</Filter>
+    </None>
   </ItemGroup>
 </Project>

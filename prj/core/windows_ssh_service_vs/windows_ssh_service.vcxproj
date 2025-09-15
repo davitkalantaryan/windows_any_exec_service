@@ -135,41 +135,49 @@
     <LinkIncremental>true</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
+    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
     <LinkIncremental>true</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
+    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
     <LinkIncremental>true</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
+    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
+    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">
     <LinkIncremental>false</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
+    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
     <LinkIncremental>false</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
+    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
+    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
+    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -295,7 +303,12 @@
     <ClCompile Include="..\..\..\src\core\windows_ssh_service\main_windows_ssh_service.c" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="..\..\..\.gitattributes" />
+    <None Include="..\..\..\.gitignore" />
+    <None Include="..\..\..\.gitmodules" />
     <None Include="..\..\..\conffiles\config.conf" />
+    <None Include="..\..\..\LICENSE" />
+    <None Include="..\..\..\README.md" />
     <None Include="..\..\..\scripts\install_service.bat" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
