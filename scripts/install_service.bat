@@ -13,7 +13,7 @@ set  scriptDirectory=%~dp0
 set  currentDirectory=%cd%
 cd /D "%scriptDirectory%.."
 
-sc create ssh_port_redirect_service binPath= "C:\FocusT\ssh_port_redirect_service\windows_ssh_service.exe" start= auto
+sc create ssh_port_redirect_service binPath= "C:\FocusT\ssh_port_redirect_service\windows_ssh_service.exe s" start= auto
 
 :: create config.conf file in the executable directory
 

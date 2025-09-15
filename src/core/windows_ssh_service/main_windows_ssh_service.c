@@ -23,12 +23,14 @@
 #define MAX_BUFFER_SIZE         8192
 #define DEFAULT_MONITORING_SERVICE_NAME     "windows_ssh_service02"
 #define CONFIG_FILE_NAME                    "config.conf"
+#define LOG_FILE_NAME                       "servicelog.log"
 #define CONFIG_FILE_NAME_LEN_PLUS_1          sizeof(CONFIG_FILE_NAME)
+#define LOG_FILE_NAME_LEN_PLUS_1            sizeof(LOG_FILE_NAME)
 
 static DWORD WINAPI MonitoringServiceMainThreadProcStatic(_In_ LPVOID) CPPUTILS_NOEXCEPT;
 static VOID WINAPI MonitoringServiceMainPlatformFunction(DWORD a_dwNumServicesArgs, LPSTR* a_lpServiceArgVectors) CPPUTILS_NOEXCEPT;
 static VOID WINAPI MonitoringServiceCtrl(DWORD a_dwCtrlCode) CPPUTILS_NOEXCEPT;
-static int CreateServiceProcessStatic(const char* CPPUTILS_ARG_NN a_cpcCommandLine, bool a_bIsService, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT;
+static int CreateServiceProcessStatic(const char* CPPUTILS_ARG_NN a_cpcCommandLine, bool a_bIsService, HANDLE a_hStdOuts, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT;
 static void NTAPI WinInterruptFunction(ULONG_PTR a_arg) CPPUTILS_NOEXCEPT { (void)a_arg; }
 
 static DWORD	s_dwServiceMainThreadId = 0;
@@ -43,15 +45,18 @@ static bool s_bShoodWork = false;
 int main(int a_argc, char* a_argv[])
 {
     PROCESS_INFORMATION procInfo;
+    SECURITY_ATTRIBUTES sa;
     char vcBuffer[MAX_BUFFER_SIZE];
-    char *pcTmp, *pcCommandLine= CPPUTILS_NULL;
+    char *pcTmp, *pcLast, *pcCommandLine= CPPUTILS_NULL;
     FILE* fpConfFile = CPPUTILS_NULL;
+    HANDLE hStdOuts;
     DWORD dwWaitRet;
     errno_t fopenRet;
     bool bShallCreateProcess;
     int nCreateProcRet;
     const char ccOptin = (a_argc > 1) ? a_argv[1][0] : 'a';
     const bool cbIsService = (ccOptin == 's');
+    //const bool cbIsService = true;
 
     if (!GetModuleFileNameA(CPPUTILS_NULL, vcBuffer, MAX_BUFFER_SIZE_TRM1)) {
         // todo: report on error
@@ -67,11 +72,31 @@ int main(int a_argc, char* a_argv[])
         }
     }
 
+    ZeroMemory(&sa, sizeof(sa));
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = CPPUTILS_NULL;
+
+    memcpy(pcTmp + 1, LOG_FILE_NAME, LOG_FILE_NAME_LEN_PLUS_1);
+    hStdOuts = CreateFileA(
+        vcBuffer,
+        FILE_APPEND_DATA,
+        FILE_SHARE_WRITE | FILE_SHARE_READ,
+        &sa,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+    if (hStdOuts == INVALID_HANDLE_VALUE) {
+        return 1;
+    }
+
     memcpy(pcTmp + 1, CONFIG_FILE_NAME, CONFIG_FILE_NAME_LEN_PLUS_1);
 
     fopenRet = fopen_s(&fpConfFile, vcBuffer, "r");
     if (fopenRet) {
         // todo: report on problem to open the file
+        CloseHandle(hStdOuts);
         return 1;
     }
 
@@ -79,15 +104,20 @@ int main(int a_argc, char* a_argv[])
         pcTmp = vcBuffer;
         while (isspace(*pcTmp)) { ++pcTmp; }
         if ((pcTmp[0] == '\0') || (pcTmp[0] == '#')) { continue; }
+        pcLast = CPPUTILS_NULL;
         pcCommandLine = pcTmp;
-        while ((*pcTmp) && (!isspace(*pcTmp))) { ++pcTmp; }
-        *pcTmp = '\0';
+        while ((*pcTmp)) { if (isspace(*pcTmp)) { pcLast = pcTmp; }  ++pcTmp; }
+        if (pcLast) {
+            *pcLast = '\0';
+        }
+        break;
     }  //  while (fgets(vcBuffer, MAX_BUFFER_SIZE_MIN_1, fpConfFile)) {
 
     fclose(fpConfFile);
 
     if (!pcCommandLine) {
         // todo: report that no command is provided
+        CloseHandle(hStdOuts);
         return 1;
     }
 
@@ -98,6 +128,7 @@ int main(int a_argc, char* a_argv[])
     if (cbIsService) {
         s_serviveMainThreadHandle = CreateThread(CPPUTILS_NULL, 0, &MonitoringServiceMainThreadProcStatic, CPPUTILS_NULL, 0, &s_dwServiceMainThreadId);
         if (!s_serviveMainThreadHandle) {
+            CloseHandle(hStdOuts);
             ExitProcess(1);
         }
     }
@@ -109,7 +140,7 @@ int main(int a_argc, char* a_argv[])
     while (s_bShoodWork) {
         if (bShallCreateProcess) {
             // "ssh -i C:\\Users\\kalantar\\.ssh\\id_rsa -R *:17389:localhost:3389 kalantar@dev001.focust.io"
-            nCreateProcRet = CreateServiceProcessStatic(pcCommandLine, cbIsService , &procInfo);
+            nCreateProcRet = CreateServiceProcessStatic(pcCommandLine, cbIsService , hStdOuts ,&procInfo);
             if (nCreateProcRet) {
                 //QtUtilsCritical() << "Unable create process"; // todo:
                 SleepEx(1000, TRUE);
@@ -130,6 +161,9 @@ int main(int a_argc, char* a_argv[])
             bShallCreateProcess = true;
             procInfo.hProcess = CPPUTILS_NULL;
             procInfo.hThread = CPPUTILS_NULL;
+            if (s_bShoodWork) {
+                SleepEx(2000, TRUE);
+            }
         }break;
         default:
             break;
@@ -157,6 +191,8 @@ int main(int a_argc, char* a_argv[])
             s_serviveMainThreadHandle = CPPUTILS_NULL;
         }  //  if (s_serviveMainThreadHandle) {
     }  //   if (cbIsService) {
+
+    CloseHandle(hStdOuts);
 
 	return 0;
 }
@@ -199,11 +235,13 @@ static inline void MonitoringServiceMarkAsDoneInline(void) CPPUTILS_NOEXCEPT  {
 }
 
 
-static int CreateServiceProcessStatic(const char* CPPUTILS_ARG_NN a_cpcCommandLine, bool a_bIsService, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
+static int CreateServiceProcessStatic(const char* CPPUTILS_ARG_NN a_cpcCommandLine, bool a_bIsService, HANDLE a_hStdOuts, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
 {
     STARTUPINFOA si;
     BOOL bCreateProcRet;
     char* const pcCommandLine = _strdup(a_cpcCommandLine);
+    BOOL bHandleInheritance;
+    DWORD dwCreationFlags;
 
     if (!pcCommandLine) {
         // todo: log on low memory
@@ -213,9 +251,21 @@ static int CreateServiceProcessStatic(const char* CPPUTILS_ARG_NN a_cpcCommandLi
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
 
+    si.dwFlags |= STARTF_USESTDHANDLES;
     if (a_bIsService) {
         si.dwFlags |= STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
+        si.cb = sizeof(si);
+        si.hStdOutput = a_hStdOuts;
+        si.hStdError = a_hStdOuts;
+        si.hStdInput = CPPUTILS_NULL;
+        bHandleInheritance = TRUE;
+        dwCreationFlags = CREATE_NO_WINDOW;
+    }
+    else {
+        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        bHandleInheritance = FALSE;
+        dwCreationFlags = 0;
     }
 
     bCreateProcRet = CreateProcessA(
@@ -223,8 +273,8 @@ static int CreateServiceProcessStatic(const char* CPPUTILS_ARG_NN a_cpcCommandLi
         pcCommandLine,				// Command line
         NULL,						// Process handle not inheritable
         NULL,						// Thread handle not inheritable
-        FALSE,						// Set handle inheritance to FALSE
-        0,							// No creation flags
+        bHandleInheritance,			// Set handle inheritance to FALSE
+        dwCreationFlags,			// No creation flags
         NULL,						// Use parent's environment block
         NULL,						// Use parent's starting directory 
         &si,						// Pointer to STARTUPINFO structure

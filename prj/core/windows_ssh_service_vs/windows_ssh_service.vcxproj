@@ -135,49 +135,41 @@
     <LinkIncremental>true</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
-    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
     <LinkIncremental>true</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
-    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
     <LinkIncremental>true</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
-    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
-    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">
     <LinkIncremental>false</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
-    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
     <LinkIncremental>false</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
-    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
-    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
     <OutDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\bin\</OutDir>
     <IntDir>$(WindowsSshServiceVirtProjectDir)..\..\..\sys\win_$(PlatformTarget)\$(Configuration)\.other\objects\$(ProjectName)\</IntDir>
-    <CopyCppRuntimeToOutputDir>true</CopyCppRuntimeToOutputDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
