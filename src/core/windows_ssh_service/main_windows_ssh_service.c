@@ -1,0 +1,334 @@
+//
+// repo:			windows_ssh_service
+// file:            main_windows_ssh_service.c
+// path:			src/core/windows_ssh_service/main_windows_ssh_service.c
+// created on:		2024 Mar 08
+// created by:		Davit Kalantaryan (davit.kalantaryan@desy.de)
+//
+
+
+#include <winexetoservice/export_symbols.h>
+#include <cinternal/disable_compiler_warnings.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdio.h>
+#include <ctype.h>
+#include <WinSock2.h>
+#include <WS2tcpip.h>
+#include <Windows.h>
+#include <cinternal/undisable_compiler_warnings.h>
+
+#define MAX_BUFFER_SIZE_TRM1    4096
+#define MAX_BUFFER_SIZE_MIN_1   8191
+#define MAX_BUFFER_SIZE         8192
+#define DEFAULT_MONITORING_SERVICE_NAME     "windows_ssh_service02"
+#define CONFIG_FILE_NAME                    "config.conf"
+#define CONFIG_FILE_NAME_LEN_PLUS_1          sizeof(CONFIG_FILE_NAME)
+
+static DWORD WINAPI MonitoringServiceMainThreadProcStatic(_In_ LPVOID) CPPUTILS_NOEXCEPT;
+static VOID WINAPI MonitoringServiceMainPlatformFunction(DWORD a_dwNumServicesArgs, LPSTR* a_lpServiceArgVectors) CPPUTILS_NOEXCEPT;
+static VOID WINAPI MonitoringServiceCtrl(DWORD a_dwCtrlCode) CPPUTILS_NOEXCEPT;
+static int CreateServiceProcessStatic(const char* CPPUTILS_ARG_NN a_cpcCommandLine, bool a_bIsService, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT;
+static void NTAPI WinInterruptFunction(ULONG_PTR a_arg) CPPUTILS_NOEXCEPT { (void)a_arg; }
+
+static DWORD	s_dwServiceMainThreadId = 0;
+static DWORD	s_dwStopableThreadId = 0;
+static DWORD	s_dwMainThreadId = 0;
+static HANDLE	s_serviveMainThreadHandle = CPPUTILS_NULL;
+static SERVICE_STATUS           ssStatus;
+static SERVICE_STATUS_HANDLE    sshStatusHandle = CPPUTILS_NULL;
+static bool s_bShoodWork = false;
+
+
+int main(int a_argc, char* a_argv[])
+{
+    PROCESS_INFORMATION procInfo;
+    char vcBuffer[MAX_BUFFER_SIZE];
+    char *pcTmp, *pcCommandLine= CPPUTILS_NULL;
+    FILE* fpConfFile = CPPUTILS_NULL;
+    DWORD dwWaitRet;
+    errno_t fopenRet;
+    bool bShallCreateProcess;
+    int nCreateProcRet;
+    const char ccOptin = (a_argc > 1) ? a_argv[1][0] : 'a';
+    const bool cbIsService = (ccOptin == 's');
+
+    if (!GetModuleFileNameA(CPPUTILS_NULL, vcBuffer, MAX_BUFFER_SIZE_TRM1)) {
+        // todo: report on error
+        return 1;
+    }
+
+    pcTmp = strrchr(vcBuffer, '\\');
+    if (!pcTmp) {
+        pcTmp = strrchr(vcBuffer, '/');
+        if (!pcTmp) {
+            // todo: report on error
+            return 1;
+        }
+    }
+
+    memcpy(pcTmp + 1, CONFIG_FILE_NAME, CONFIG_FILE_NAME_LEN_PLUS_1);
+
+    fopenRet = fopen_s(&fpConfFile, vcBuffer, "r");
+    if (fopenRet) {
+        // todo: report on problem to open the file
+        return 1;
+    }
+
+    while (fgets(vcBuffer, MAX_BUFFER_SIZE_MIN_1, fpConfFile)) {
+        pcTmp = vcBuffer;
+        while (isspace(*pcTmp)) { ++pcTmp; }
+        if ((pcTmp[0] == '\0') || (pcTmp[0] == '#')) { continue; }
+        pcCommandLine = pcTmp;
+        while ((*pcTmp) && (!isspace(*pcTmp))) { ++pcTmp; }
+        *pcTmp = '\0';
+    }  //  while (fgets(vcBuffer, MAX_BUFFER_SIZE_MIN_1, fpConfFile)) {
+
+    fclose(fpConfFile);
+
+    if (!pcCommandLine) {
+        // todo: report that no command is provided
+        return 1;
+    }
+
+    s_bShoodWork = true;
+
+    s_dwMainThreadId = GetCurrentThreadId();
+
+    if (cbIsService) {
+        s_serviveMainThreadHandle = CreateThread(CPPUTILS_NULL, 0, &MonitoringServiceMainThreadProcStatic, CPPUTILS_NULL, 0, &s_dwServiceMainThreadId);
+        if (!s_serviveMainThreadHandle) {
+            ExitProcess(1);
+        }
+    }
+
+    bShallCreateProcess = true;
+    procInfo.hProcess = CPPUTILS_NULL;
+    procInfo.hThread = CPPUTILS_NULL;
+
+    while (s_bShoodWork) {
+        if (bShallCreateProcess) {
+            // "ssh -i C:\\Users\\kalantar\\.ssh\\id_rsa -R *:17389:localhost:3389 kalantar@dev001.focust.io"
+            nCreateProcRet = CreateServiceProcessStatic(pcCommandLine, cbIsService , &procInfo);
+            if (nCreateProcRet) {
+                //QtUtilsCritical() << "Unable create process"; // todo:
+                SleepEx(1000, TRUE);
+                continue;
+            }
+            bShallCreateProcess = false;
+        }  //   if (bShallCreateProcess) {
+
+        dwWaitRet = WaitForSingleObjectEx(procInfo.hProcess, INFINITE, TRUE);
+        switch (dwWaitRet) {
+        case WAIT_OBJECT_0: {
+            if (procInfo.hThread) {
+                CloseHandle(procInfo.hThread);
+            }
+            if (procInfo.hProcess) {
+                CloseHandle(procInfo.hProcess);
+            }
+            bShallCreateProcess = true;
+            procInfo.hProcess = CPPUTILS_NULL;
+            procInfo.hThread = CPPUTILS_NULL;
+        }break;
+        default:
+            break;
+        }  //   switch (dwWaitRet) {
+
+    }  //  while (s_bShoodWork) {
+
+    if (procInfo.hProcess) {
+        TerminateProcess(procInfo.hProcess,1);
+        WaitForSingleObject(procInfo.hProcess, INFINITE);
+    }
+
+    if (procInfo.hThread) {
+        CloseHandle(procInfo.hThread);
+    }
+    if (procInfo.hProcess) {
+        CloseHandle(procInfo.hProcess);
+    }
+
+    if (cbIsService) {
+        if (s_serviveMainThreadHandle) {
+            WaitForSingleObjectEx(s_serviveMainThreadHandle, INFINITE, TRUE);
+            s_dwServiceMainThreadId = 0;
+            CloseHandle(s_serviveMainThreadHandle);
+            s_serviveMainThreadHandle = CPPUTILS_NULL;
+        }  //  if (s_serviveMainThreadHandle) {
+    }  //   if (cbIsService) {
+
+	return 0;
+}
+
+
+static inline bool MonitoringServiceInitializeInline(void) CPPUTILS_NOEXCEPT  {
+    if (sshStatusHandle) {
+        return true;
+    }
+
+    sshStatusHandle = RegisterServiceCtrlHandlerA(DEFAULT_MONITORING_SERVICE_NAME, &MonitoringServiceCtrl);
+    if (!sshStatusHandle) return false;
+    ssStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    ssStatus.dwServiceSpecificExitCode = 0;
+    ssStatus.dwCurrentState = SERVICE_START_PENDING;
+    ssStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+    ssStatus.dwWin32ExitCode = NO_ERROR;
+    ssStatus.dwCheckPoint = 0;
+    ssStatus.dwWaitHint = 3000;
+    SetServiceStatus(sshStatusHandle, &ssStatus);
+
+    return true;
+}
+
+
+static inline VOID UpdateStatusInline(int a_newStatus, int a_check) CPPUTILS_NOEXCEPT  {
+    if (a_check < 0)	ssStatus.dwCheckPoint++;
+    else			ssStatus.dwCheckPoint = CPPUTILS_STATIC_CAST(DWORD, a_check);
+    if (a_newStatus >= 0)	ssStatus.dwCurrentState = CPPUTILS_STATIC_CAST(DWORD, a_newStatus);
+    SetServiceStatus(sshStatusHandle, &ssStatus);
+    return;
+}
+
+
+static inline void MonitoringServiceMarkAsDoneInline(void) CPPUTILS_NOEXCEPT  {
+    ssStatus.dwServiceSpecificExitCode = 0;
+    ssStatus.dwCurrentState = SERVICE_STOPPED;
+    SetServiceStatus(sshStatusHandle, &ssStatus);
+    UpdateStatusInline(SERVICE_STOPPED, 0);
+}
+
+
+static int CreateServiceProcessStatic(const char* CPPUTILS_ARG_NN a_cpcCommandLine, bool a_bIsService, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
+{
+    STARTUPINFOA si;
+    BOOL bCreateProcRet;
+    char* const pcCommandLine = _strdup(a_cpcCommandLine);
+
+    if (!pcCommandLine) {
+        // todo: log on low memory
+        ExitProcess(1);
+    }
+
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+
+    if (a_bIsService) {
+        si.dwFlags |= STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+    }
+
+    bCreateProcRet = CreateProcessA(
+        NULL,						// ssh
+        pcCommandLine,				// Command line
+        NULL,						// Process handle not inheritable
+        NULL,						// Thread handle not inheritable
+        FALSE,						// Set handle inheritance to FALSE
+        0,							// No creation flags
+        NULL,						// Use parent's environment block
+        NULL,						// Use parent's starting directory 
+        &si,						// Pointer to STARTUPINFO structure
+        a_pProcInfo);	            // Pointer to PROCESS_INFORMATION structure
+
+    free(pcCommandLine);
+
+    return bCreateProcRet ? 0 : 1;
+}
+
+
+static VOID WINAPI MonitoringServiceCtrl(DWORD a_dwCtrlCode) CPPUTILS_NOEXCEPT
+{
+    switch (a_dwCtrlCode)
+    {
+    case SERVICE_CONTROL_STOP:
+    case SERVICE_CONTROL_SHUTDOWN: {
+        s_bShoodWork = false;
+        UpdateStatusInline(SERVICE_STOP_PENDING, -1);
+        const DWORD dwThreadId = GetCurrentThreadId();
+        if ((s_dwStopableThreadId != s_dwServiceMainThreadId) && (dwThreadId != s_dwStopableThreadId)) {
+            const HANDLE stopableThreadHandle = OpenThread(THREAD_ALL_ACCESS, FALSE, s_dwStopableThreadId);
+            if (stopableThreadHandle) {
+                QueueUserAPC(&WinInterruptFunction, stopableThreadHandle, 0);
+                CloseHandle(stopableThreadHandle);
+            }
+            else {
+                //QtUtilsCritical() << "Unable open thread"; // todo:
+                ExitProcess(2);
+            }
+        }
+        if (dwThreadId != s_dwMainThreadId) {
+            const HANDLE mainThreadHandle = OpenThread(THREAD_ALL_ACCESS, FALSE, s_dwMainThreadId);
+            if (mainThreadHandle) {
+                QueueUserAPC(&WinInterruptFunction, mainThreadHandle, 0);
+                CloseHandle(mainThreadHandle);
+            }
+            else {
+                //QtUtilsCritical() << "Unable open thread"; // todo:
+                ExitProcess(2);
+            }
+        }  //  if (dwThreadId != s_dwMainThreadId) {
+    }return;
+    case SERVICE_CONTROL_INTERROGATE:
+        UpdateStatusInline(-1, -1);
+        break;
+    default:
+        UpdateStatusInline(-1, -1);
+        break;
+
+    }
+}
+
+
+static DWORD WINAPI MonitoringServiceMainThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT
+{
+    CPPUTILS_STATIC_CAST(void, a_pArg);
+
+    const SERVICE_TABLE_ENTRYA dispatchTable[] =
+    {
+        { (char*)DEFAULT_MONITORING_SERVICE_NAME, &MonitoringServiceMainPlatformFunction },
+        { CPPUTILS_NULL, CPPUTILS_NULL }
+    };
+
+    StartServiceCtrlDispatcherA(dispatchTable);
+
+    return 0;
+}
+
+
+static VOID WINAPI MonitoringServiceMainPlatformFunction(DWORD a_dwNumServicesArgs, LPSTR* a_lpServiceArgVectors) CPPUTILS_NOEXCEPT
+{
+    //if ((a_dwNumServicesArgs > 0) && (a_lpServiceArgVectors[0])) {
+    //    switch ((a_lpServiceArgVectors[0])[0]) {
+    //    case 'u':
+    //        g_startReason = StartReason::Update;
+    //        break;
+    //    case 'i':
+    //        g_startReason = StartReason::Install;
+    //        break;
+    //    default:
+    //        g_startReason = StartReason::HostStart;
+    //        break;
+    //    }
+    //}
+    //else {
+    //    g_startReason = StartReason::HostStart;
+    //}
+
+    if (!MonitoringServiceInitializeInline()) {
+        return;
+    }
+
+    s_dwStopableThreadId = GetCurrentThreadId();
+    s_bShoodWork = true;
+
+    UpdateStatusInline(SERVICE_RUNNING, -1);
+
+    if (s_dwStopableThreadId != s_dwServiceMainThreadId) {
+        while (s_bShoodWork) {
+            SleepEx(INFINITE, TRUE);
+        }
+    }
+
+    MonitoringServiceMarkAsDoneInline();
+
+}
