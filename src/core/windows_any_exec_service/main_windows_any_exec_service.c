@@ -21,25 +21,41 @@
 #include <Windows.h>
 #include <cinternal/undisable_compiler_warnings.h>
 
+#define READ_BUFFER_SIZE_MIN1   2046
+#define READ_BUFFER_SIZE        2047
 #define MAX_BUFFER_SIZE_TRM1    4096
 #define MAX_BUFFER_SIZE_MIN_1   8191
 #define MAX_BUFFER_SIZE         8192
 #define CONFIG_FILE_NAME                    "config.conf"
-#define LOG_FILE_NAME                       "servicelog.log"
 #define CONFIG_FILE_NAME_LEN_PLUS_1          sizeof(CONFIG_FILE_NAME)
-#define LOG_FILE_NAME_LEN_PLUS_1            sizeof(LOG_FILE_NAME)
+
+#ifndef container_of
+#define container_of(_ptr,_type,_member) (_type*)(  ((char*)(_ptr)) + (size_t)( (char*)(&((_type *)0)->_member) )  )
+#endif
 
 
 typedef struct SConfigParams {
     const char* m_pcServiceName;
     const char* m_pcCommandLine;
+    const char* m_pcExecFilePath;
+    const char* m_pcExecDirectory;
     char*       m_pcBuffer;
+    size_t      m_execFilePathLen;
+    size_t      m_execDirectoryLen;
     HANDLE      m_hStdOuts;
-    HANDLE      m_reserved01;
+    HANDLE      m_inputPipe;
     char        m_cOption;  
     bool        m_bIsService; 
     bool        reserved02[sizeof(void*)-sizeof(bool)-sizeof(char)];
 } SConfigParams;
+
+typedef struct SOverlappedStr {
+    OVERLAPPED                  m_overlapped;
+    HANDLE                      m_hEventSource;
+    const struct SConfigParams* m_cpSrvParams;
+    bool                        m_bContinueOverrlapped;
+    char                        m_buffer[READ_BUFFER_SIZE];
+}SOverlappedStr;
 
 static DWORD WINAPI ServiceStartThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT;
 static DWORD WINAPI PipeReadThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT;
@@ -48,6 +64,8 @@ static DWORD WINAPI MonitoringServiceCtrlEx(DWORD a_dwControl, DWORD a_dwEventTy
 static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT;
 static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPPUTILS_NOEXCEPT;
 static void ClearServiceParameters(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams) CPPUTILS_NOEXCEPT;
+static VOID WINAPI OverlappedCompletionRoutineStatic(_In_ DWORD a_dwErrorCode, _In_ DWORD a_dwNumberOfBytesTransfered, _Inout_ LPOVERLAPPED a_lpOverlapped) CPPUTILS_NOEXCEPT;
+static int InstallUninstallServiceStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams) CPPUTILS_NOEXCEPT;
 static void NTAPI WinInterruptFunction(ULONG_PTR a_arg) CPPUTILS_NOEXCEPT { (void)a_arg; }
 
 static DWORD	s_dwServiceMainThreadId2 = 0;
@@ -100,8 +118,9 @@ int main(int a_argc, char* a_argv[])
         }
         break;
     default: // we have installation or uninstallation
+        nCreateProcRet = InstallUninstallServiceStatic(pSrvParams);
         ClearServiceParameters(pSrvParams);
-        return 0;
+        return nCreateProcRet;
     }  //  switch (ccOptin) {
 
     bShallCreateProcess = true;
@@ -388,11 +407,157 @@ static VOID WINAPI ServiceMainFunctionStatic(DWORD a_dwNumServicesArgs, LPSTR* a
 
 static DWORD WINAPI PipeReadThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT
 {
+    SOverlappedStr ovrlpdStr;
     const SConfigParams* const cpSrvParams = (SConfigParams*)a_pArg;
+    
+    ZeroMemory(&ovrlpdStr, sizeof(ovrlpdStr));
+    ovrlpdStr.m_hEventSource = RegisterEventSourceA(CPPUTILS_NULL, cpSrvParams->m_pcServiceName);
 
-    (void)cpSrvParams;
+    if (ovrlpdStr.m_hEventSource) {
+        
+        ovrlpdStr.m_cpSrvParams = cpSrvParams;
+        ovrlpdStr.m_bContinueOverrlapped = true;
+
+        if (ReadFileEx(cpSrvParams->m_inputPipe, ovrlpdStr.m_buffer, READ_BUFFER_SIZE_MIN1, &(ovrlpdStr.m_overlapped), &OverlappedCompletionRoutineStatic)) {
+            while (s_bShoodWork && (ovrlpdStr.m_bContinueOverrlapped)) {
+                SleepEx(INFINITE, TRUE);
+            }  //  while (s_bShoodWork && (ovrlpdStr.m_bContinueOverrlapped)) {
+        }
+
+        DeregisterEventSource(ovrlpdStr.m_hEventSource);
+
+    }  //  if (ovrlpdStr.m_hEventSource) {
 
     return 0;
+}
+
+
+static VOID WINAPI OverlappedCompletionRoutineStatic(_In_ DWORD a_dwErrorCode, _In_ DWORD a_dwNumberOfBytesTransfered, _Inout_ LPOVERLAPPED a_lpOverlapped) CPPUTILS_NOEXCEPT
+{
+    SOverlappedStr* const pOverlappedStr = container_of(a_lpOverlapped, SOverlappedStr, m_overlapped);
+    (void)a_dwErrorCode;
+    if (a_dwNumberOfBytesTransfered > 0) {
+        LPCSTR strings[1] = { pOverlappedStr->m_buffer };
+        pOverlappedStr->m_buffer[a_dwNumberOfBytesTransfered] = '\0';
+
+        ReportEventA(pOverlappedStr->m_hEventSource,
+            EVENTLOG_INFORMATION_TYPE,
+            0,
+            0,
+            NULL,
+            1,
+            0,
+            strings,
+            NULL);
+    }  //   if (a_dwNumberOfBytesTransfered > 0) {
+
+    if (s_bShoodWork) {
+        ZeroMemory(a_lpOverlapped, sizeof(OVERLAPPED));
+        if (!ReadFileEx(pOverlappedStr->m_cpSrvParams->m_inputPipe, pOverlappedStr->m_buffer, READ_BUFFER_SIZE_MIN1, a_lpOverlapped, &OverlappedCompletionRoutineStatic)) {
+            pOverlappedStr->m_bContinueOverrlapped = false;
+        }  //  if (!ReadFileEx(pOverlappedStr->m_cpSrvParams->m_inputPipe, pOverlappedStr->m_buffer, READ_BUFFER_SIZE_MIN1, a_lpOverlapped, &OverlappedCompletionRoutineStatic)) {
+    }  // if (s_bShoodWork) {
+}
+
+
+static int InstallUninstallServiceStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams) CPPUTILS_NOEXCEPT
+{
+    SC_HANDLE schSCManager;
+    SC_HANDLE schService;
+    
+    schSCManager = OpenSCManagerA(CPPUTILS_NULL, CPPUTILS_NULL, SC_MANAGER_ALL_ACCESS);
+    if (!schSCManager) {
+        // todo: report on error
+        s_bShoodWork = false;
+        return 1;
+    }
+
+    schService = OpenServiceA(schSCManager, a_cpSrvParams->m_pcServiceName, SERVICE_ALL_ACCESS);	// need delete access
+    if (schService) {
+        SERVICE_STATUS servStat;
+        ControlService(schService, SERVICE_CONTROL_STOP, &servStat);
+        DeleteService(schService);
+    }  //  if (schService) {
+    else {
+        char* const pcTemporarBuffer = (char*)malloc(32+ (size_t)(a_cpSrvParams->m_execFilePathLen));
+        if (!pcTemporarBuffer) {
+            CloseServiceHandle(schSCManager);
+            fprintf(stderr, "Low memory!\n");
+            return 1;
+        }
+        pcTemporarBuffer[0] = '\"';
+        memcpy(pcTemporarBuffer+1, a_cpSrvParams->m_pcExecFilePath, (size_t)(a_cpSrvParams->m_execFilePathLen));
+        pcTemporarBuffer[a_cpSrvParams->m_execFilePathLen + 1] = '\"';
+        pcTemporarBuffer[a_cpSrvParams->m_execFilePathLen + 2] = ' ';
+        pcTemporarBuffer[a_cpSrvParams->m_execFilePathLen + 3] = 's';
+        pcTemporarBuffer[a_cpSrvParams->m_execFilePathLen + 4] = '\0';
+        schService = CreateServiceA(
+            schSCManager,
+            a_cpSrvParams->m_pcServiceName,
+            a_cpSrvParams->m_pcServiceName,
+            SERVICE_ALL_ACCESS,
+            SERVICE_WIN32_OWN_PROCESS,
+            SERVICE_AUTO_START,
+            SERVICE_ERROR_NORMAL,
+            pcTemporarBuffer,
+            CPPUTILS_NULL,
+            CPPUTILS_NULL,
+            CPPUTILS_NULL,
+            CPPUTILS_NULL,
+            CPPUTILS_NULL);
+        free(pcTemporarBuffer);
+        if (schService) {
+            LPCSTR srvArgs[] = { "i", CPPUTILS_NULL };
+            SC_ACTION scActions[3];
+            scActions[0].Type = SC_ACTION_RESTART;
+            scActions[0].Delay = 5000;  // 5 seconds
+            scActions[1].Type = SC_ACTION_RESTART;
+            scActions[1].Delay = 5000;
+            scActions[2].Type = SC_ACTION_RESTART;
+            scActions[2].Delay = 5000;
+
+            SERVICE_FAILURE_ACTIONS failureActions = {};
+            failureActions.dwResetPeriod = INFINITE;
+            failureActions.lpRebootMsg = NULL;
+            failureActions.lpCommand = NULL;
+            failureActions.cActions = 3;
+            failureActions.lpsaActions = scActions;
+
+            if (!ChangeServiceConfig2A(schService, SERVICE_CONFIG_FAILURE_ACTIONS, &failureActions)) {
+                fprintf(stderr, "Unable to configure service recovery! Error: %lu\n", GetLastError());
+            }
+
+            // start service
+            StartServiceA(schService, 1, srvArgs);
+        }  //  if (schService) { 
+        else {
+            CloseServiceHandle(schSCManager);
+            fprintf(stderr, "Unable to create service!\n");
+            return 1;
+        }
+    }  //  else of 'if (schService) {'
+
+    CloseServiceHandle(schService);
+    CloseServiceHandle(schSCManager);
+
+    return 0;
+}
+
+
+static inline char* MemMemInline(const char* CPPUTILS_ARG_NN a_key, size_t a_keyLen, char* CPPUTILS_ARG_NN a_pWholeBuffer, size_t a_wholeBufferLen) CPPUTILS_NOEXCEPT  {
+    size_t countToSearch, i;
+    if (a_keyLen > a_wholeBufferLen) {
+        return CPPUTILS_NULL;
+    }
+
+    countToSearch = a_wholeBufferLen - a_keyLen + 1;
+    for (i = 0; i < countToSearch; ++i) {
+        if (memcmp(a_key, a_pWholeBuffer + i, a_keyLen) == 0) {
+            return a_pWholeBuffer + i;
+        }
+    }  //  for (i = 0; i < countToSearch; ++i) {
+
+    return CPPUTILS_NULL;
 }
 
 
@@ -402,19 +567,99 @@ static void ClearServiceParameters(const SConfigParams* CPPUTILS_ARG_NN a_pSrvPa
         CloseHandle(a_pSrvParams->m_hStdOuts);
     }
 
+    if (a_pSrvParams->m_inputPipe) {
+        CloseHandle(a_pSrvParams->m_inputPipe);
+    }
+
     if (a_pSrvParams->m_pcBuffer) {
         free(a_pSrvParams->m_pcBuffer);
+    }
+
+    if (a_pSrvParams->m_pcExecDirectory) {
+        free((char*)(a_pSrvParams->m_pcExecDirectory));
+    }
+
+    if (a_pSrvParams->m_pcExecFilePath) {
+        free((char*)(a_pSrvParams->m_pcExecFilePath));
     }
 
     free((SConfigParams*)a_pSrvParams);
 }
 
 
+static inline char* FindElementByKeyInline(const char* CPPUTILS_ARG_NN a_key, char* CPPUTILS_ARG_NN a_pWholeBuffer, size_t a_wholeBufferLen) CPPUTILS_NOEXCEPT
+{
+    const size_t keyLen = strlen(a_key);
+    size_t scanBufferLen = a_wholeBufferLen;
+    char* pcReturn;
+    char* pcLast = CPPUTILS_NULL;
+    char* pcTmp = MemMemInline(a_key, keyLen,a_pWholeBuffer, a_wholeBufferLen);
+
+    while (pcTmp) {
+        pcTmp += keyLen;
+        while (isspace(*pcTmp)) { ++pcTmp; }
+        if (pcTmp[0]=='=') {
+            break;
+        }
+        scanBufferLen = a_wholeBufferLen - (size_t)(pcTmp - a_pWholeBuffer);
+        pcTmp = MemMemInline(a_key, keyLen, pcTmp, scanBufferLen);
+    }  //  while (pcTmp) { 
+
+    if (!pcTmp) {
+        return CPPUTILS_NULL;
+    }
+
+    ++pcTmp;
+
+    while (isspace(*pcTmp)) {++pcTmp;}
+
+    if (pcTmp[0] == 0) {
+        return CPPUTILS_NULL;
+    }
+
+    if (((*pcTmp) == '\"')||((*pcTmp) == '\'')) {
+        const char aTerm = (*pcTmp);
+        pcReturn = ++pcTmp;
+        while ((*pcTmp)) { 
+            if ((*pcTmp) == aTerm) {
+                pcLast = pcTmp; 
+            }
+            else if (pcTmp[0] == '\n') {
+                if (!pcLast) {
+                    pcLast = pcTmp;
+                }
+                break;
+            }
+            ++pcTmp; 
+        }  //   while ((*pcTmp)) { 
+    }  //  if (isQuotaUsed) {
+    else {
+        pcReturn = pcTmp;
+        while ((*pcTmp)) {
+            if (isspace(*pcTmp)) {
+                pcLast = pcTmp;
+                break;
+            }
+            ++pcTmp;
+        }  //   while ((*pcTmp)) {
+    }  //  else of 'if (isQuotaUsed) {'
+
+    if (pcLast) {
+        *pcLast = '\0';
+    }
+
+    return pcReturn;
+}
+
+
 static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPPUTILS_NOEXCEPT
 {
-    SECURITY_ATTRIBUTES sa;
+    size_t readCount;
+    DWORD dwModuleFnameLen;
+    struct _stat fStat;
+    char vcBuffer[MAX_BUFFER_SIZE];
     errno_t fopenRet;
-    char* pcTmp, * pcLast;
+    char* pcTmp, * pcExecDirectory;
     FILE* fpConfFile = CPPUTILS_NULL;
     SConfigParams* const pSrvParams = (SConfigParams*)calloc(1, sizeof(SConfigParams));
 
@@ -423,88 +668,98 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
         return CPPUTILS_NULL;
     }
 
-    pSrvParams->m_pcServiceName = "ssh_port_redirect_service04";
-
-    pSrvParams->m_pcBuffer = (char*)malloc(sizeof(char)*MAX_BUFFER_SIZE);
-    if (!(pSrvParams->m_pcBuffer)) {
-        free(pSrvParams);
-        return CPPUTILS_NULL;
-    }
-
     pSrvParams->m_cOption = (a_argc > 1) ? a_argv[1][0] : 'i';
     pSrvParams->m_bIsService = ((pSrvParams->m_cOption) == 's');
 
-    if (!GetModuleFileNameA(CPPUTILS_NULL, pSrvParams->m_pcBuffer, MAX_BUFFER_SIZE_TRM1)) {
+    dwModuleFnameLen = GetModuleFileNameA(CPPUTILS_NULL, vcBuffer, MAX_BUFFER_SIZE_TRM1);
+    if (!dwModuleFnameLen) {
         // todo: report on error
-        free(pSrvParams->m_pcBuffer);
         free(pSrvParams);
         return CPPUTILS_NULL;
     }
 
-    pcTmp = strrchr(pSrvParams->m_pcBuffer, '\\');
+    pSrvParams->m_pcExecFilePath = _strdup(vcBuffer);
+    if (!(pSrvParams->m_pcExecFilePath)) {
+        free(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+    pSrvParams->m_execFilePathLen = (size_t)(dwModuleFnameLen);
+
+    pcTmp = strrchr(vcBuffer, '\\');
     if (!pcTmp) {
-        pcTmp = strrchr(pSrvParams->m_pcBuffer, '/');
+        pcTmp = strrchr(vcBuffer, '/');
         if (!pcTmp) {
             // todo: report on error
-            free(pSrvParams->m_pcBuffer);
             free(pSrvParams);
             return CPPUTILS_NULL;
         }
     }
 
+    pSrvParams->m_execDirectoryLen = (size_t)(pcTmp - vcBuffer);
+    pSrvParams->m_pcExecDirectory = pcExecDirectory = (char*)malloc(sizeof(char) * (pSrvParams->m_execDirectoryLen + 1));
+    if (!(pSrvParams->m_pcExecDirectory)) {
+        free(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+    memcpy(pcExecDirectory, vcBuffer, pSrvParams->m_execDirectoryLen);
+    pcExecDirectory[pSrvParams->m_execDirectoryLen] = 0;
+
     if (pSrvParams->m_bIsService) {
+        SECURITY_ATTRIBUTES sa;
         ZeroMemory(&sa, sizeof(sa));
         sa.nLength = sizeof(SECURITY_ATTRIBUTES);
         sa.bInheritHandle = TRUE;
-        sa.lpSecurityDescriptor = CPPUTILS_NULL;
 
-        memcpy(pcTmp + 1, LOG_FILE_NAME, LOG_FILE_NAME_LEN_PLUS_1);
-        pSrvParams->m_hStdOuts = CreateFileA(
-            pSrvParams->m_pcBuffer,
-            FILE_APPEND_DATA,
-            FILE_SHARE_WRITE | FILE_SHARE_READ,
-            &sa,
-            OPEN_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL,
-            NULL
-        );
-        if ((!pSrvParams->m_hStdOuts) || ((pSrvParams->m_hStdOuts) == INVALID_HANDLE_VALUE)) {
-            free(pSrvParams->m_pcBuffer);
+        if (!CreatePipe(&(pSrvParams->m_inputPipe), &(pSrvParams->m_hStdOuts), &sa, 0)) {
             free(pSrvParams);
             return CPPUTILS_NULL;
         }
+
+        SetStdHandle(STD_OUTPUT_HANDLE, pSrvParams->m_hStdOuts);
+        SetStdHandle(STD_ERROR_HANDLE, pSrvParams->m_hStdOuts);
+
+        // Ensure read handle is not inherited
+        SetHandleInformation(pSrvParams->m_inputPipe, HANDLE_FLAG_INHERIT, 0);
     }  //  if (pSrvParams->m_bIsService) {
 
     memcpy(pcTmp + 1, CONFIG_FILE_NAME, CONFIG_FILE_NAME_LEN_PLUS_1);
-    fopenRet = fopen_s(&fpConfFile, pSrvParams->m_pcBuffer, "r");
+    fopenRet = fopen_s(&fpConfFile, vcBuffer, "r");
     if (fopenRet) {
         // todo: report on problem to open the file
-        CloseHandle(pSrvParams->m_hStdOuts);
-        free(pSrvParams->m_pcBuffer);
-        free(pSrvParams);
+        ClearServiceParameters(pSrvParams);
         return CPPUTILS_NULL;
     }
 
-    while (fgets(pSrvParams->m_pcBuffer, MAX_BUFFER_SIZE_MIN_1, fpConfFile)) {
-        pcTmp = pSrvParams->m_pcBuffer;
-        while (isspace(*pcTmp)) { ++pcTmp; }
-        if ((pcTmp[0] == '\0') || (pcTmp[0] == '#')) { continue; }
-        pcLast = CPPUTILS_NULL;
-        pSrvParams->m_pcCommandLine = pcTmp;
-        while ((*pcTmp)) { if (isspace(*pcTmp)) { pcLast = pcTmp; }  ++pcTmp; }
-        if (pcLast) {
-            *pcLast = '\0';
-        }
-        break;
-    }  //  while (fgets(vcBuffer, MAX_BUFFER_SIZE_MIN_1, fpConfFile)) {
+    if (_fstat(_fileno(fpConfFile), &fStat)){
+        fclose(fpConfFile);
+        ClearServiceParameters(pSrvParams);
+        return CPPUTILS_NULL;
+    }
 
+    pSrvParams->m_pcBuffer = (char*)malloc(sizeof(char)*((size_t)fStat.st_size+4));
+    if (!(pSrvParams->m_pcBuffer)) {
+        fclose(fpConfFile);
+        ClearServiceParameters(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+
+    readCount = fread_s(pSrvParams->m_pcBuffer, sizeof(char) * ((size_t)fStat.st_size + 1), sizeof(char), (size_t)fStat.st_size, fpConfFile);
     fclose(fpConfFile);
+    if (!readCount) {
+        ClearServiceParameters(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+    pSrvParams->m_pcBuffer[readCount] = 0;
 
+    pSrvParams->m_pcServiceName = FindElementByKeyInline("name", pSrvParams->m_pcBuffer, readCount);
+    if (!(pSrvParams->m_pcServiceName)) {
+        ClearServiceParameters(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+
+    pSrvParams->m_pcCommandLine = FindElementByKeyInline("exec", pSrvParams->m_pcBuffer, readCount);
     if (!(pSrvParams->m_pcCommandLine)) {
-        // todo: report that no command is provided
-        CloseHandle(pSrvParams->m_hStdOuts);
-        free(pSrvParams->m_pcBuffer);
-        free(pSrvParams);
+        ClearServiceParameters(pSrvParams);
         return CPPUTILS_NULL;
     }
 

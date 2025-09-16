@@ -299,6 +299,8 @@
     <None Include="..\..\..\.gitignore" />
     <None Include="..\..\..\.gitmodules" />
     <None Include="..\..\..\conffiles\config.conf" />
+    <None Include="..\..\..\conffiles\config_v01.conf" />
+    <None Include="..\..\..\conffiles\config_v02.conf" />
     <None Include="..\..\..\LICENSE" />
     <None Include="..\..\..\README.md" />
     <None Include="..\..\..\scripts\install_service.bat" />

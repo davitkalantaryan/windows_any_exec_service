@@ -50,5 +50,11 @@
     <None Include="..\..\..\README.md">
       <Filter>repo_files</Filter>
     </None>
+    <None Include="..\..\..\conffiles\config_v01.conf">
+      <Filter>repo_files\conffiles</Filter>
+    </None>
+    <None Include="..\..\..\conffiles\config_v02.conf">
+      <Filter>repo_files\conffiles</Filter>
+    </None>
   </ItemGroup>
 </Project>
