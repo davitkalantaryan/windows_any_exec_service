@@ -7,8 +7,6 @@
 //
 
 
-#define USE_SIMPLE_SRV_CONTROL
-
 #include <winexetoservice/export_symbols.h>
 #include <cinternal/disable_compiler_warnings.h>
 #include <stdbool.h>
@@ -46,11 +44,7 @@ typedef struct SConfigParams {
 static DWORD WINAPI ServiceStartThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT;
 static DWORD WINAPI PipeReadThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT;
 static VOID WINAPI ServiceMainFunctionStatic(DWORD a_dwNumServicesArgs, LPSTR* a_lpServiceArgVectors) CPPUTILS_NOEXCEPT;
-#ifdef USE_SIMPLE_SRV_CONTROL
-static void WINAPI MonitoringServiceCtrl(DWORD a_dwControl) CPPUTILS_NOEXCEPT;
-#else
 static DWORD WINAPI MonitoringServiceCtrlEx(DWORD a_dwControl, DWORD a_dwEventType, LPVOID a_lpEventData, LPVOID a_lpContext) CPPUTILS_NOEXCEPT;
-#endif
 static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT;
 static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPPUTILS_NOEXCEPT;
 static void ClearServiceParameters(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams) CPPUTILS_NOEXCEPT;
@@ -185,12 +179,7 @@ static inline bool MonitoringServiceInitializeInline(const SConfigParams* CPPUTI
         return true;
     }
 
-#ifdef USE_SIMPLE_SRV_CONTROL
-    (void)a_cpSrvParams;
-    sshStatusHandle = RegisterServiceCtrlHandlerA(a_cpSrvParams->m_pcServiceName, &MonitoringServiceCtrl);
-#else
     sshStatusHandle = RegisterServiceCtrlHandlerExA(a_cpSrvParams->m_pcServiceName, &MonitoringServiceCtrlEx, (SConfigParams*)a_cpSrvParams);
-#endif
     if (!sshStatusHandle) return false;
     ssStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
     ssStatus.dwServiceSpecificExitCode = 0;
@@ -272,22 +261,15 @@ static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpS
 }
 
 
-#ifdef USE_SIMPLE_SRV_CONTROL
-static void WINAPI MonitoringServiceCtrl(DWORD a_dwControl) CPPUTILS_NOEXCEPT
-#else
 static DWORD WINAPI MonitoringServiceCtrlEx(DWORD a_dwControl, DWORD a_dwEventType, LPVOID a_lpEventData, LPVOID a_lpContext) CPPUTILS_NOEXCEPT
-#endif
 {
 
-#ifndef USE_SIMPLE_SRV_CONTROL
     const SConfigParams* const cpSrvParams = (SConfigParams*)a_lpContext;
     (void)a_dwEventType;
     (void)a_lpEventData;
     (void)cpSrvParams;
-#endif
 
-    switch (a_dwControl)
-    {
+    switch (a_dwControl){
     case SERVICE_CONTROL_STOP:
     case SERVICE_CONTROL_SHUTDOWN: {
         s_bShoodWork = false;
@@ -341,14 +323,10 @@ static DWORD WINAPI MonitoringServiceCtrlEx(DWORD a_dwControl, DWORD a_dwEventTy
         break;
         //return NO_ERROR;
     default:
-        UpdateStatusInline(-1, -1);
-        break;
+        return ERROR_CALL_NOT_IMPLEMENTED;
+    }  //  switch (a_dwControl){
 
-    }
-
-#ifndef USE_SIMPLE_SRV_CONTROL
     return NO_ERROR;
-#endif
 
 }
 
