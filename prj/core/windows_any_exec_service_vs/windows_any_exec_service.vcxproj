@@ -292,7 +292,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\..\src\core\windows_ssh_service\main_windows_ssh_service.c" />
+    <ClCompile Include="..\..\..\src\core\windows_any_exec_service\main_windows_any_exec_service.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\..\.gitattributes" />
