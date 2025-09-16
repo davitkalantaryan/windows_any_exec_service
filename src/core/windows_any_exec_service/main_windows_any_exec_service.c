@@ -24,7 +24,6 @@
 #define MAX_BUFFER_SIZE_TRM1    4096
 #define MAX_BUFFER_SIZE_MIN_1   8191
 #define MAX_BUFFER_SIZE         8192
-#define DEFAULT_MONITORING_SERVICE_NAME     "windows_ssh_service02"
 #define CONFIG_FILE_NAME                    "config.conf"
 #define LOG_FILE_NAME                       "servicelog.log"
 #define CONFIG_FILE_NAME_LEN_PLUS_1          sizeof(CONFIG_FILE_NAME)
@@ -57,6 +56,7 @@ static HANDLE	s_serviveMainThreadHandle = CPPUTILS_NULL;
 static SERVICE_STATUS           ssStatus;
 static SERVICE_STATUS_HANDLE    sshStatusHandle = CPPUTILS_NULL;
 static bool s_bShoodWork = false;
+const SConfigParams* s_pSrvParams = CPPUTILS_NULL;  // todo: get rid of this variable
 
 
 int main(int a_argc, char* a_argv[])
@@ -71,6 +71,7 @@ int main(int a_argc, char* a_argv[])
         // todo: report on failure
         return 1;
     }
+    s_pSrvParams = pSrvParams;
 
     s_bShoodWork = true;
     s_dwMainThreadId = GetCurrentThreadId();
@@ -79,7 +80,7 @@ int main(int a_argc, char* a_argv[])
     case 'a':  //  we have usual application
         break;
     case 's':  // we have service
-        s_serviveMainThreadHandle = CreateThread(CPPUTILS_NULL, 0, &MonitoringServiceMainThreadProcStatic, CPPUTILS_NULL, 0, &s_dwServiceMainThreadId);
+        s_serviveMainThreadHandle = CreateThread(CPPUTILS_NULL, 0, &MonitoringServiceMainThreadProcStatic, (SConfigParams*)pSrvParams, 0, &s_dwServiceMainThreadId);
         if (!s_serviveMainThreadHandle) {
             ClearServiceParameters(pSrvParams);
             ExitProcess(1);
@@ -155,12 +156,12 @@ int main(int a_argc, char* a_argv[])
 }
 
 
-static inline bool MonitoringServiceInitializeInline(void) CPPUTILS_NOEXCEPT  {
+static inline bool MonitoringServiceInitializeInline(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams) CPPUTILS_NOEXCEPT  {
     if (sshStatusHandle) {
         return true;
     }
 
-    sshStatusHandle = RegisterServiceCtrlHandlerA(DEFAULT_MONITORING_SERVICE_NAME, &MonitoringServiceCtrl);
+    sshStatusHandle = RegisterServiceCtrlHandlerA(a_cpSrvParams->m_pcServiceName, &MonitoringServiceCtrl);
     if (!sshStatusHandle) return false;
     ssStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
     ssStatus.dwServiceSpecificExitCode = 0;
@@ -287,11 +288,11 @@ static VOID WINAPI MonitoringServiceCtrl(DWORD a_dwCtrlCode) CPPUTILS_NOEXCEPT
 
 static DWORD WINAPI MonitoringServiceMainThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT
 {
-    CPPUTILS_STATIC_CAST(void, a_pArg);
+    const SConfigParams* const cpSrvParams = (SConfigParams*)a_pArg;
 
     const SERVICE_TABLE_ENTRYA dispatchTable[] =
     {
-        { (char*)DEFAULT_MONITORING_SERVICE_NAME, &MonitoringServiceMainPlatformFunction },
+        { (char*)(cpSrvParams->m_pcServiceName), &MonitoringServiceMainPlatformFunction },
         { CPPUTILS_NULL, CPPUTILS_NULL }
     };
 
@@ -323,7 +324,7 @@ static VOID WINAPI MonitoringServiceMainPlatformFunction(DWORD a_dwNumServicesAr
     (void)a_dwNumServicesArgs;
     (void)a_lpServiceArgVectors;
 
-    if (!MonitoringServiceInitializeInline()) {
+    if (!MonitoringServiceInitializeInline(s_pSrvParams)) {
         return;
     }
 
@@ -371,6 +372,8 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
         fprintf(stderr,"Low memory!\n");
         return CPPUTILS_NULL;
     }
+
+    pSrvParams->m_pcServiceName = "ssh_port_redirect_service04";
 
     pSrvParams->m_pcBuffer = (char*)malloc(sizeof(char)*MAX_BUFFER_SIZE);
     if (!(pSrvParams->m_pcBuffer)) {
