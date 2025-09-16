@@ -12,7 +12,10 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <ctype.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <Windows.h>
@@ -27,10 +30,24 @@
 #define CONFIG_FILE_NAME_LEN_PLUS_1          sizeof(CONFIG_FILE_NAME)
 #define LOG_FILE_NAME_LEN_PLUS_1            sizeof(LOG_FILE_NAME)
 
+
+typedef struct SConfigParams {
+    const char* m_pcServiceName;
+    const char* m_pcCommandLine;
+    char*       m_pcBuffer;
+    HANDLE      m_hStdOuts;
+    HANDLE      m_reserved01;
+    char        m_cOption;  
+    bool        m_bIsService; 
+    bool        reserved02[sizeof(void*)-sizeof(bool)-sizeof(char)];
+} SConfigParams;
+
 static DWORD WINAPI MonitoringServiceMainThreadProcStatic(_In_ LPVOID) CPPUTILS_NOEXCEPT;
 static VOID WINAPI MonitoringServiceMainPlatformFunction(DWORD a_dwNumServicesArgs, LPSTR* a_lpServiceArgVectors) CPPUTILS_NOEXCEPT;
 static VOID WINAPI MonitoringServiceCtrl(DWORD a_dwCtrlCode) CPPUTILS_NOEXCEPT;
-static int CreateServiceProcessStatic(const char* CPPUTILS_ARG_NN a_cpcCommandLine, bool a_bIsService, HANDLE a_hStdOuts, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT;
+static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT;
+static SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPPUTILS_NOEXCEPT;
+static void ClearServiceParameters(const SConfigParams* a_cpSrvParams) CPPUTILS_NOEXCEPT;
 static void NTAPI WinInterruptFunction(ULONG_PTR a_arg) CPPUTILS_NOEXCEPT { (void)a_arg; }
 
 static DWORD	s_dwServiceMainThreadId = 0;
@@ -45,93 +62,32 @@ static bool s_bShoodWork = false;
 int main(int a_argc, char* a_argv[])
 {
     PROCESS_INFORMATION procInfo;
-    SECURITY_ATTRIBUTES sa;
-    char vcBuffer[MAX_BUFFER_SIZE];
-    char *pcTmp, *pcLast, *pcCommandLine= CPPUTILS_NULL;
-    FILE* fpConfFile = CPPUTILS_NULL;
-    HANDLE hStdOuts;
     DWORD dwWaitRet;
-    errno_t fopenRet;
     bool bShallCreateProcess;
     int nCreateProcRet;
-    const char ccOptin = (a_argc > 1) ? a_argv[1][0] : 'a';
-    const bool cbIsService = (ccOptin == 's');
-    //const bool cbIsService = true;
+    const SConfigParams* const pSrvParams = GetServiceParametersStatic(a_argc, a_argv);
 
-    if (!GetModuleFileNameA(CPPUTILS_NULL, vcBuffer, MAX_BUFFER_SIZE_TRM1)) {
-        // todo: report on error
-        return 1;
-    }
-
-    pcTmp = strrchr(vcBuffer, '\\');
-    if (!pcTmp) {
-        pcTmp = strrchr(vcBuffer, '/');
-        if (!pcTmp) {
-            // todo: report on error
-            return 1;
-        }
-    }
-
-    ZeroMemory(&sa, sizeof(sa));
-    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-    sa.bInheritHandle = TRUE;
-    sa.lpSecurityDescriptor = CPPUTILS_NULL;
-
-    memcpy(pcTmp + 1, LOG_FILE_NAME, LOG_FILE_NAME_LEN_PLUS_1);
-    hStdOuts = CreateFileA(
-        vcBuffer,
-        FILE_APPEND_DATA,
-        FILE_SHARE_WRITE | FILE_SHARE_READ,
-        &sa,
-        OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL
-    );
-    if (hStdOuts == INVALID_HANDLE_VALUE) {
-        return 1;
-    }
-
-    memcpy(pcTmp + 1, CONFIG_FILE_NAME, CONFIG_FILE_NAME_LEN_PLUS_1);
-
-    fopenRet = fopen_s(&fpConfFile, vcBuffer, "r");
-    if (fopenRet) {
-        // todo: report on problem to open the file
-        CloseHandle(hStdOuts);
-        return 1;
-    }
-
-    while (fgets(vcBuffer, MAX_BUFFER_SIZE_MIN_1, fpConfFile)) {
-        pcTmp = vcBuffer;
-        while (isspace(*pcTmp)) { ++pcTmp; }
-        if ((pcTmp[0] == '\0') || (pcTmp[0] == '#')) { continue; }
-        pcLast = CPPUTILS_NULL;
-        pcCommandLine = pcTmp;
-        while ((*pcTmp)) { if (isspace(*pcTmp)) { pcLast = pcTmp; }  ++pcTmp; }
-        if (pcLast) {
-            *pcLast = '\0';
-        }
-        break;
-    }  //  while (fgets(vcBuffer, MAX_BUFFER_SIZE_MIN_1, fpConfFile)) {
-
-    fclose(fpConfFile);
-
-    if (!pcCommandLine) {
-        // todo: report that no command is provided
-        CloseHandle(hStdOuts);
+    if (!pSrvParams) {
+        // todo: report on failure
         return 1;
     }
 
     s_bShoodWork = true;
-
     s_dwMainThreadId = GetCurrentThreadId();
 
-    if (cbIsService) {
+    switch (pSrvParams->m_cOption) {
+    case 'a':  //  we have usual application
+        break;
+    case 's':  // we have service
         s_serviveMainThreadHandle = CreateThread(CPPUTILS_NULL, 0, &MonitoringServiceMainThreadProcStatic, CPPUTILS_NULL, 0, &s_dwServiceMainThreadId);
         if (!s_serviveMainThreadHandle) {
-            CloseHandle(hStdOuts);
+            ClearServiceParameters(pSrvParams);
             ExitProcess(1);
         }
-    }
+        break;
+    default: // we have installation or uninstallation
+        return;
+    }  //  switch (ccOptin) {
 
     bShallCreateProcess = true;
     procInfo.hProcess = CPPUTILS_NULL;
@@ -140,7 +96,7 @@ int main(int a_argc, char* a_argv[])
     while (s_bShoodWork) {
         if (bShallCreateProcess) {
             // "ssh -i C:\\Users\\kalantar\\.ssh\\id_rsa -R *:17389:localhost:3389 kalantar@dev001.focust.io"
-            nCreateProcRet = CreateServiceProcessStatic(pcCommandLine, cbIsService , hStdOuts ,&procInfo);
+            nCreateProcRet = CreateServiceProcessStatic(pSrvParams,&procInfo);
             if (nCreateProcRet) {
                 //QtUtilsCritical() << "Unable create process"; // todo:
                 SleepEx(1000, TRUE);
@@ -183,7 +139,7 @@ int main(int a_argc, char* a_argv[])
         CloseHandle(procInfo.hProcess);
     }
 
-    if (cbIsService) {
+    if (pSrvParams->m_bIsService) {
         if (s_serviveMainThreadHandle) {
             WaitForSingleObjectEx(s_serviveMainThreadHandle, INFINITE, TRUE);
             s_dwServiceMainThreadId = 0;
@@ -192,7 +148,7 @@ int main(int a_argc, char* a_argv[])
         }  //  if (s_serviveMainThreadHandle) {
     }  //   if (cbIsService) {
 
-    CloseHandle(hStdOuts);
+    ClearServiceParameters(pSrvParams);
 
 	return 0;
 }
@@ -235,11 +191,11 @@ static inline void MonitoringServiceMarkAsDoneInline(void) CPPUTILS_NOEXCEPT  {
 }
 
 
-static int CreateServiceProcessStatic(const char* CPPUTILS_ARG_NN a_cpcCommandLine, bool a_bIsService, HANDLE a_hStdOuts, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
+static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
 {
     STARTUPINFOA si;
     BOOL bCreateProcRet;
-    char* const pcCommandLine = _strdup(a_cpcCommandLine);
+    char* const pcCommandLine = _strdup(a_cpSrvParams->m_pcCommandLine);
     BOOL bHandleInheritance;
     DWORD dwCreationFlags;
 
@@ -251,19 +207,18 @@ static int CreateServiceProcessStatic(const char* CPPUTILS_ARG_NN a_cpcCommandLi
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
 
-    si.dwFlags |= STARTF_USESTDHANDLES;
-    if (a_bIsService) {
-        si.dwFlags |= STARTF_USESHOWWINDOW;
+    if (a_cpSrvParams->m_bIsService) {
+        si.dwFlags |= (STARTF_USESHOWWINDOW| STARTF_USESTDHANDLES);
         si.wShowWindow = SW_HIDE;
         si.cb = sizeof(si);
-        si.hStdOutput = a_hStdOuts;
-        si.hStdError = a_hStdOuts;
+        si.hStdOutput = a_cpSrvParams->m_hStdOuts;
+        si.hStdError = a_cpSrvParams->m_hStdOuts;
         si.hStdInput = CPPUTILS_NULL;
         bHandleInheritance = TRUE;
         dwCreationFlags = CREATE_NO_WINDOW;
     }
     else {
-        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        //si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
         bHandleInheritance = FALSE;
         dwCreationFlags = 0;
     }
@@ -364,6 +319,9 @@ static VOID WINAPI MonitoringServiceMainPlatformFunction(DWORD a_dwNumServicesAr
     //    g_startReason = StartReason::HostStart;
     //}
 
+    (void)a_dwNumServicesArgs;
+    (void)a_lpServiceArgVectors;
+
     if (!MonitoringServiceInitializeInline()) {
         return;
     }
@@ -381,4 +339,118 @@ static VOID WINAPI MonitoringServiceMainPlatformFunction(DWORD a_dwNumServicesAr
 
     MonitoringServiceMarkAsDoneInline();
 
+}
+
+
+static void ClearServiceParameters(const SConfigParams* a_pSrvParams) CPPUTILS_NOEXCEPT
+{
+    if (a_pSrvParams) {
+        if (a_pSrvParams->m_hStdOuts) {
+            CloseHandle(a_pSrvParams->m_hStdOuts);
+        }
+
+        if (a_pSrvParams->m_pcBuffer) {
+            free(a_pSrvParams->m_pcBuffer);
+        }
+
+        free((SConfigParams*)a_pSrvParams);
+    }  //  if (a_cpSrvParams) {
+}
+
+
+static SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPPUTILS_NOEXCEPT
+{
+    SECURITY_ATTRIBUTES sa;
+    errno_t fopenRet;
+    char* pcTmp, * pcLast, * pcCommandLine = CPPUTILS_NULL;
+    FILE* fpConfFile = CPPUTILS_NULL;
+    SConfigParams* const pSrvParams = calloc(1, sizeof(SConfigParams));
+
+    if (!pSrvParams) {
+        fprintf(stderr,"Low memory!\n");
+        return CPPUTILS_NULL;
+    }
+
+    pSrvParams->m_pcBuffer = (char*)malloc(sizeof(char)*MAX_BUFFER_SIZE);
+    if (!(pSrvParams->m_pcBuffer)) {
+        free(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+
+    pSrvParams->m_cOption = (a_argc > 1) ? a_argv[1][0] : 'i';
+    pSrvParams->m_bIsService = ((pSrvParams->m_cOption) == 's');
+
+    if (!GetModuleFileNameA(CPPUTILS_NULL, pSrvParams->m_pcBuffer, MAX_BUFFER_SIZE_TRM1)) {
+        // todo: report on error
+        free(pSrvParams->m_pcBuffer);
+        free(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+
+    pcTmp = strrchr(pSrvParams->m_pcBuffer, '\\');
+    if (!pcTmp) {
+        pcTmp = strrchr(pSrvParams->m_pcBuffer, '/');
+        if (!pcTmp) {
+            // todo: report on error
+            free(pSrvParams->m_pcBuffer);
+            free(pSrvParams);
+            return CPPUTILS_NULL;
+        }
+    }
+
+    ZeroMemory(&sa, sizeof(sa));
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = CPPUTILS_NULL;
+
+    memcpy(pcTmp + 1, LOG_FILE_NAME, LOG_FILE_NAME_LEN_PLUS_1);
+    pSrvParams->m_hStdOuts = CreateFileA(
+        pSrvParams->m_pcBuffer,
+        FILE_APPEND_DATA,
+        FILE_SHARE_WRITE | FILE_SHARE_READ,
+        &sa,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+    if ((!pSrvParams->m_hStdOuts) || ((pSrvParams->m_hStdOuts) == INVALID_HANDLE_VALUE)) {
+        free(pSrvParams->m_pcBuffer);
+        free(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+
+    memcpy(pcTmp + 1, CONFIG_FILE_NAME, CONFIG_FILE_NAME_LEN_PLUS_1);
+    fopenRet = fopen_s(&fpConfFile, pSrvParams->m_pcBuffer, "r");
+    if (fopenRet) {
+        // todo: report on problem to open the file
+        CloseHandle(pSrvParams->m_hStdOuts);
+        free(pSrvParams->m_pcBuffer);
+        free(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+
+    while (fgets(pSrvParams->m_pcBuffer, MAX_BUFFER_SIZE_MIN_1, fpConfFile)) {
+        pcTmp = pSrvParams->m_pcBuffer;
+        while (isspace(*pcTmp)) { ++pcTmp; }
+        if ((pcTmp[0] == '\0') || (pcTmp[0] == '#')) { continue; }
+        pcLast = CPPUTILS_NULL;
+        pcCommandLine = pcTmp;
+        while ((*pcTmp)) { if (isspace(*pcTmp)) { pcLast = pcTmp; }  ++pcTmp; }
+        if (pcLast) {
+            *pcLast = '\0';
+        }
+        break;
+    }  //  while (fgets(vcBuffer, MAX_BUFFER_SIZE_MIN_1, fpConfFile)) {
+
+    fclose(fpConfFile);
+
+    if (!pcCommandLine) {
+        // todo: report that no command is provided
+        CloseHandle(pSrvParams->m_hStdOuts);
+        free(pSrvParams->m_pcBuffer);
+        free(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+
+    return pSrvParams;
 }
