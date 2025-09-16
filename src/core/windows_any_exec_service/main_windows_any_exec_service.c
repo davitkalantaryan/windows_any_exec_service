@@ -7,6 +7,8 @@
 //
 
 
+#define USE_SIMPLE_SRV_CONTROL
+
 #include <winexetoservice/export_symbols.h>
 #include <cinternal/disable_compiler_warnings.h>
 #include <stdbool.h>
@@ -41,27 +43,34 @@ typedef struct SConfigParams {
     bool        reserved02[sizeof(void*)-sizeof(bool)-sizeof(char)];
 } SConfigParams;
 
-static DWORD WINAPI MonitoringServiceMainThreadProcStatic(_In_ LPVOID) CPPUTILS_NOEXCEPT;
-static VOID WINAPI MonitoringServiceMainPlatformFunction(DWORD a_dwNumServicesArgs, LPSTR* a_lpServiceArgVectors) CPPUTILS_NOEXCEPT;
-static VOID WINAPI MonitoringServiceCtrl(DWORD a_dwCtrlCode) CPPUTILS_NOEXCEPT;
+static DWORD WINAPI ServiceStartThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT;
+static DWORD WINAPI PipeReadThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT;
+static VOID WINAPI ServiceMainFunctionStatic(DWORD a_dwNumServicesArgs, LPSTR* a_lpServiceArgVectors) CPPUTILS_NOEXCEPT;
+#ifdef USE_SIMPLE_SRV_CONTROL
+static void WINAPI MonitoringServiceCtrl(DWORD a_dwControl) CPPUTILS_NOEXCEPT;
+#else
+static DWORD WINAPI MonitoringServiceCtrlEx(DWORD a_dwControl, DWORD a_dwEventType, LPVOID a_lpEventData, LPVOID a_lpContext) CPPUTILS_NOEXCEPT;
+#endif
 static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT;
 static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPPUTILS_NOEXCEPT;
-static void ClearServiceParameters(const SConfigParams* a_cpSrvParams) CPPUTILS_NOEXCEPT;
+static void ClearServiceParameters(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams) CPPUTILS_NOEXCEPT;
 static void NTAPI WinInterruptFunction(ULONG_PTR a_arg) CPPUTILS_NOEXCEPT { (void)a_arg; }
 
-static DWORD	s_dwServiceMainThreadId = 0;
-static DWORD	s_dwStopableThreadId = 0;
-static DWORD	s_dwMainThreadId = 0;
-static HANDLE	s_serviveMainThreadHandle = CPPUTILS_NULL;
+static DWORD	s_dwServiceMainThreadId2 = 0;
+static DWORD	s_dwServiceStartThreadId = 0;
+static DWORD	s_dwExeMainThreadId = 0;
+static DWORD	s_dwPipeThreadId = 0;
 static SERVICE_STATUS           ssStatus;
 static SERVICE_STATUS_HANDLE    sshStatusHandle = CPPUTILS_NULL;
 static bool s_bShoodWork = false;
-const SConfigParams* s_pSrvParams = CPPUTILS_NULL;  // todo: get rid of this variable
+static const SConfigParams* s_pSrvParams = CPPUTILS_NULL;
 
 
 int main(int a_argc, char* a_argv[])
 {
     PROCESS_INFORMATION procInfo;
+    HANDLE	serviceStartThreadHandle = CPPUTILS_NULL;
+    HANDLE	pipeThreadHandle = CPPUTILS_NULL;
     DWORD dwWaitRet;
     bool bShallCreateProcess;
     int nCreateProcRet;
@@ -71,17 +80,27 @@ int main(int a_argc, char* a_argv[])
         // todo: report on failure
         return 1;
     }
-    s_pSrvParams = pSrvParams;
+
+    s_pSrvParams = pSrvParams; // todo: if windows has data providing to service function, then skip this
 
     s_bShoodWork = true;
-    s_dwMainThreadId = GetCurrentThreadId();
+    s_dwExeMainThreadId = GetCurrentThreadId();
 
     switch (pSrvParams->m_cOption) {
     case 'a':  //  we have usual application
         break;
     case 's':  // we have service
-        s_serviveMainThreadHandle = CreateThread(CPPUTILS_NULL, 0, &MonitoringServiceMainThreadProcStatic, (SConfigParams*)pSrvParams, 0, &s_dwServiceMainThreadId);
-        if (!s_serviveMainThreadHandle) {
+        pipeThreadHandle = CreateThread(CPPUTILS_NULL, 0, &PipeReadThreadProcStatic, (SConfigParams*)pSrvParams, 0, &s_dwPipeThreadId);
+        if (!pipeThreadHandle) {
+            ClearServiceParameters(pSrvParams);
+            ExitProcess(1);
+        }
+        serviceStartThreadHandle = CreateThread(CPPUTILS_NULL, 0, &ServiceStartThreadProcStatic, (SConfigParams*)pSrvParams, 0, &s_dwServiceStartThreadId);
+        if (!serviceStartThreadHandle) {
+            s_bShoodWork = false;
+            QueueUserAPC(&WinInterruptFunction, pipeThreadHandle, 0);
+            WaitForSingleObject(pipeThreadHandle, INFINITE);
+            CloseHandle(pipeThreadHandle);
             ClearServiceParameters(pSrvParams);
             ExitProcess(1);
         }
@@ -129,6 +148,8 @@ int main(int a_argc, char* a_argv[])
 
     }  //  while (s_bShoodWork) {
 
+    s_dwExeMainThreadId = 0;
+
     if (procInfo.hProcess) {
         TerminateProcess(procInfo.hProcess,1);
         WaitForSingleObject(procInfo.hProcess, INFINITE);
@@ -141,14 +162,17 @@ int main(int a_argc, char* a_argv[])
         CloseHandle(procInfo.hProcess);
     }
 
-    if (pSrvParams->m_bIsService) {
-        if (s_serviveMainThreadHandle) {
-            WaitForSingleObjectEx(s_serviveMainThreadHandle, INFINITE, TRUE);
-            s_dwServiceMainThreadId = 0;
-            CloseHandle(s_serviveMainThreadHandle);
-            s_serviveMainThreadHandle = CPPUTILS_NULL;
-        }  //  if (s_serviveMainThreadHandle) {
-    }  //   if (cbIsService) {
+    if (serviceStartThreadHandle) {
+        WaitForSingleObjectEx(serviceStartThreadHandle, INFINITE, TRUE);
+        s_dwServiceStartThreadId = 0;
+        CloseHandle(serviceStartThreadHandle);
+    }  //  if (serviceMainThreadHandle) {
+
+    if (pipeThreadHandle) {
+        WaitForSingleObjectEx(pipeThreadHandle, INFINITE, TRUE);
+        s_dwPipeThreadId = 0;
+        CloseHandle(pipeThreadHandle);
+    }  //  if (s_serviveMainThreadHandle) {
 
     ClearServiceParameters(pSrvParams);
 
@@ -161,7 +185,12 @@ static inline bool MonitoringServiceInitializeInline(const SConfigParams* CPPUTI
         return true;
     }
 
+#ifdef USE_SIMPLE_SRV_CONTROL
+    (void)a_cpSrvParams;
     sshStatusHandle = RegisterServiceCtrlHandlerA(a_cpSrvParams->m_pcServiceName, &MonitoringServiceCtrl);
+#else
+    sshStatusHandle = RegisterServiceCtrlHandlerExA(a_cpSrvParams->m_pcServiceName, &MonitoringServiceCtrlEx, (SConfigParams*)a_cpSrvParams);
+#endif
     if (!sshStatusHandle) return false;
     ssStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
     ssStatus.dwServiceSpecificExitCode = 0;
@@ -243,56 +272,94 @@ static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpS
 }
 
 
-static VOID WINAPI MonitoringServiceCtrl(DWORD a_dwCtrlCode) CPPUTILS_NOEXCEPT
+#ifdef USE_SIMPLE_SRV_CONTROL
+static void WINAPI MonitoringServiceCtrl(DWORD a_dwControl) CPPUTILS_NOEXCEPT
+#else
+static DWORD WINAPI MonitoringServiceCtrlEx(DWORD a_dwControl, DWORD a_dwEventType, LPVOID a_lpEventData, LPVOID a_lpContext) CPPUTILS_NOEXCEPT
+#endif
 {
-    switch (a_dwCtrlCode)
+
+#ifndef USE_SIMPLE_SRV_CONTROL
+    const SConfigParams* const cpSrvParams = (SConfigParams*)a_lpContext;
+    (void)a_dwEventType;
+    (void)a_lpEventData;
+    (void)cpSrvParams;
+#endif
+
+    switch (a_dwControl)
     {
     case SERVICE_CONTROL_STOP:
     case SERVICE_CONTROL_SHUTDOWN: {
         s_bShoodWork = false;
         UpdateStatusInline(SERVICE_STOP_PENDING, -1);
         const DWORD dwThreadId = GetCurrentThreadId();
-        if ((s_dwStopableThreadId != s_dwServiceMainThreadId) && (dwThreadId != s_dwStopableThreadId)) {
-            const HANDLE stopableThreadHandle = OpenThread(THREAD_ALL_ACCESS, FALSE, s_dwStopableThreadId);
-            if (stopableThreadHandle) {
-                QueueUserAPC(&WinInterruptFunction, stopableThreadHandle, 0);
-                CloseHandle(stopableThreadHandle);
+        if ((dwThreadId != s_dwServiceMainThreadId2) && s_dwServiceMainThreadId2) {
+            const HANDLE serviceMainThreadHandle = OpenThread(THREAD_ALL_ACCESS, FALSE, s_dwServiceMainThreadId2);
+            if (serviceMainThreadHandle) {
+                QueueUserAPC(&WinInterruptFunction, serviceMainThreadHandle, 0);
+                CloseHandle(serviceMainThreadHandle);
             }
             else {
                 //QtUtilsCritical() << "Unable open thread"; // todo:
-                ExitProcess(2);
             }
         }
-        if (dwThreadId != s_dwMainThreadId) {
-            const HANDLE mainThreadHandle = OpenThread(THREAD_ALL_ACCESS, FALSE, s_dwMainThreadId);
-            if (mainThreadHandle) {
-                QueueUserAPC(&WinInterruptFunction, mainThreadHandle, 0);
-                CloseHandle(mainThreadHandle);
+        if ((dwThreadId != s_dwServiceStartThreadId)&& s_dwServiceStartThreadId) {
+            const HANDLE serviceStartThreadHandle = OpenThread(THREAD_ALL_ACCESS, FALSE, s_dwServiceStartThreadId);
+            if (serviceStartThreadHandle) {
+                QueueUserAPC(&WinInterruptFunction, serviceStartThreadHandle, 0);
+                CloseHandle(serviceStartThreadHandle);
             }
             else {
                 //QtUtilsCritical() << "Unable open thread"; // todo:
-                ExitProcess(2);
+            }
+        }
+        if ((dwThreadId != s_dwPipeThreadId)&& s_dwPipeThreadId) {
+            const HANDLE pipeThreadHandle = OpenThread(THREAD_ALL_ACCESS, FALSE, s_dwPipeThreadId);
+            if (pipeThreadHandle) {
+                QueueUserAPC(&WinInterruptFunction, pipeThreadHandle, 0);
+                CloseHandle(pipeThreadHandle);
+            }
+            else {
+                //QtUtilsCritical() << "Unable open thread"; // todo:
+            }
+        }
+        if ((dwThreadId != s_dwExeMainThreadId)&& s_dwExeMainThreadId) {
+            const HANDLE exeMainThreadHandle = OpenThread(THREAD_ALL_ACCESS, FALSE, s_dwExeMainThreadId);
+            if (exeMainThreadHandle) {
+                QueueUserAPC(&WinInterruptFunction, exeMainThreadHandle, 0);
+                CloseHandle(exeMainThreadHandle);
+            }
+            else {
+                //QtUtilsCritical() << "Unable open thread"; // todo:
             }
         }  //  if (dwThreadId != s_dwMainThreadId) {
-    }return;
+    }
+    //return NO_ERROR;
+    break;
     case SERVICE_CONTROL_INTERROGATE:
         UpdateStatusInline(-1, -1);
         break;
+        //return NO_ERROR;
     default:
         UpdateStatusInline(-1, -1);
         break;
 
     }
+
+#ifndef USE_SIMPLE_SRV_CONTROL
+    return NO_ERROR;
+#endif
+
 }
 
 
-static DWORD WINAPI MonitoringServiceMainThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT
+static DWORD WINAPI ServiceStartThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT
 {
     const SConfigParams* const cpSrvParams = (SConfigParams*)a_pArg;
 
     const SERVICE_TABLE_ENTRYA dispatchTable[] =
     {
-        { (char*)(cpSrvParams->m_pcServiceName), &MonitoringServiceMainPlatformFunction },
+        { (char*)(cpSrvParams->m_pcServiceName), &ServiceMainFunctionStatic },
         { CPPUTILS_NULL, CPPUTILS_NULL }
     };
 
@@ -302,7 +369,7 @@ static DWORD WINAPI MonitoringServiceMainThreadProcStatic(_In_ LPVOID a_pArg) CP
 }
 
 
-static VOID WINAPI MonitoringServiceMainPlatformFunction(DWORD a_dwNumServicesArgs, LPSTR* a_lpServiceArgVectors) CPPUTILS_NOEXCEPT
+static VOID WINAPI ServiceMainFunctionStatic(DWORD a_dwNumServicesArgs, LPSTR* a_lpServiceArgVectors) CPPUTILS_NOEXCEPT
 {
     //if ((a_dwNumServicesArgs > 0) && (a_lpServiceArgVectors[0])) {
     //    switch ((a_lpServiceArgVectors[0])[0]) {
@@ -324,39 +391,44 @@ static VOID WINAPI MonitoringServiceMainPlatformFunction(DWORD a_dwNumServicesAr
     (void)a_dwNumServicesArgs;
     (void)a_lpServiceArgVectors;
 
+    s_dwServiceMainThreadId2 = GetCurrentThreadId();
+
     if (!MonitoringServiceInitializeInline(s_pSrvParams)) {
+        s_bShoodWork = false;
         return;
     }
 
-    s_dwStopableThreadId = GetCurrentThreadId();
-    s_bShoodWork = true;
-
     UpdateStatusInline(SERVICE_RUNNING, -1);
 
-    if (s_dwStopableThreadId != s_dwServiceMainThreadId) {
-        while (s_bShoodWork) {
-            SleepEx(INFINITE, TRUE);
-        }
+    while (s_bShoodWork) {
+        SleepEx(INFINITE, TRUE);
     }
-
     MonitoringServiceMarkAsDoneInline();
 
 }
 
 
-static void ClearServiceParameters(const SConfigParams* a_pSrvParams) CPPUTILS_NOEXCEPT
+static DWORD WINAPI PipeReadThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT
 {
-    if (a_pSrvParams) {
-        if (a_pSrvParams->m_hStdOuts) {
-            CloseHandle(a_pSrvParams->m_hStdOuts);
-        }
+    const SConfigParams* const cpSrvParams = (SConfigParams*)a_pArg;
 
-        if (a_pSrvParams->m_pcBuffer) {
-            free(a_pSrvParams->m_pcBuffer);
-        }
+    (void)cpSrvParams;
 
-        free((SConfigParams*)a_pSrvParams);
-    }  //  if (a_cpSrvParams) {
+    return 0;
+}
+
+
+static void ClearServiceParameters(const SConfigParams* CPPUTILS_ARG_NN a_pSrvParams) CPPUTILS_NOEXCEPT
+{
+    if (a_pSrvParams->m_hStdOuts) {
+        CloseHandle(a_pSrvParams->m_hStdOuts);
+    }
+
+    if (a_pSrvParams->m_pcBuffer) {
+        free(a_pSrvParams->m_pcBuffer);
+    }
+
+    free((SConfigParams*)a_pSrvParams);
 }
 
 
