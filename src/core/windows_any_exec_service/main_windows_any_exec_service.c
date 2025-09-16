@@ -37,6 +37,7 @@
 typedef struct SConfigParams {
     const char* m_pcServiceName;
     const char* m_pcCommandLine;
+    const char* m_pcInit;
     const char* m_pcExecFilePath;
     const char* m_pcExecDirectory;
     char*       m_pcBuffer;
@@ -762,6 +763,8 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
         ClearServiceParameters(pSrvParams);
         return CPPUTILS_NULL;
     }
+
+    pSrvParams->m_pcInit = FindElementByKeyInline("init", pSrvParams->m_pcBuffer, readCount);
 
     return pSrvParams;
 }
