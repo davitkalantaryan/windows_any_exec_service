@@ -46,7 +46,7 @@ static DWORD WINAPI MonitoringServiceMainThreadProcStatic(_In_ LPVOID) CPPUTILS_
 static VOID WINAPI MonitoringServiceMainPlatformFunction(DWORD a_dwNumServicesArgs, LPSTR* a_lpServiceArgVectors) CPPUTILS_NOEXCEPT;
 static VOID WINAPI MonitoringServiceCtrl(DWORD a_dwCtrlCode) CPPUTILS_NOEXCEPT;
 static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT;
-static SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPPUTILS_NOEXCEPT;
+static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPPUTILS_NOEXCEPT;
 static void ClearServiceParameters(const SConfigParams* a_cpSrvParams) CPPUTILS_NOEXCEPT;
 static void NTAPI WinInterruptFunction(ULONG_PTR a_arg) CPPUTILS_NOEXCEPT { (void)a_arg; }
 
@@ -86,7 +86,8 @@ int main(int a_argc, char* a_argv[])
         }
         break;
     default: // we have installation or uninstallation
-        return;
+        ClearServiceParameters(pSrvParams);
+        return 0;
     }  //  switch (ccOptin) {
 
     bShallCreateProcess = true;
@@ -358,13 +359,13 @@ static void ClearServiceParameters(const SConfigParams* a_pSrvParams) CPPUTILS_N
 }
 
 
-static SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPPUTILS_NOEXCEPT
+static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPPUTILS_NOEXCEPT
 {
     SECURITY_ATTRIBUTES sa;
     errno_t fopenRet;
-    char* pcTmp, * pcLast, * pcCommandLine = CPPUTILS_NULL;
+    char* pcTmp, * pcLast;
     FILE* fpConfFile = CPPUTILS_NULL;
-    SConfigParams* const pSrvParams = calloc(1, sizeof(SConfigParams));
+    SConfigParams* const pSrvParams = (SConfigParams*)calloc(1, sizeof(SConfigParams));
 
     if (!pSrvParams) {
         fprintf(stderr,"Low memory!\n");
@@ -398,26 +399,28 @@ static SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPP
         }
     }
 
-    ZeroMemory(&sa, sizeof(sa));
-    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-    sa.bInheritHandle = TRUE;
-    sa.lpSecurityDescriptor = CPPUTILS_NULL;
+    if (pSrvParams->m_bIsService) {
+        ZeroMemory(&sa, sizeof(sa));
+        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+        sa.bInheritHandle = TRUE;
+        sa.lpSecurityDescriptor = CPPUTILS_NULL;
 
-    memcpy(pcTmp + 1, LOG_FILE_NAME, LOG_FILE_NAME_LEN_PLUS_1);
-    pSrvParams->m_hStdOuts = CreateFileA(
-        pSrvParams->m_pcBuffer,
-        FILE_APPEND_DATA,
-        FILE_SHARE_WRITE | FILE_SHARE_READ,
-        &sa,
-        OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL
-    );
-    if ((!pSrvParams->m_hStdOuts) || ((pSrvParams->m_hStdOuts) == INVALID_HANDLE_VALUE)) {
-        free(pSrvParams->m_pcBuffer);
-        free(pSrvParams);
-        return CPPUTILS_NULL;
-    }
+        memcpy(pcTmp + 1, LOG_FILE_NAME, LOG_FILE_NAME_LEN_PLUS_1);
+        pSrvParams->m_hStdOuts = CreateFileA(
+            pSrvParams->m_pcBuffer,
+            FILE_APPEND_DATA,
+            FILE_SHARE_WRITE | FILE_SHARE_READ,
+            &sa,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            NULL
+        );
+        if ((!pSrvParams->m_hStdOuts) || ((pSrvParams->m_hStdOuts) == INVALID_HANDLE_VALUE)) {
+            free(pSrvParams->m_pcBuffer);
+            free(pSrvParams);
+            return CPPUTILS_NULL;
+        }
+    }  //  if (pSrvParams->m_bIsService) {
 
     memcpy(pcTmp + 1, CONFIG_FILE_NAME, CONFIG_FILE_NAME_LEN_PLUS_1);
     fopenRet = fopen_s(&fpConfFile, pSrvParams->m_pcBuffer, "r");
@@ -434,7 +437,7 @@ static SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPP
         while (isspace(*pcTmp)) { ++pcTmp; }
         if ((pcTmp[0] == '\0') || (pcTmp[0] == '#')) { continue; }
         pcLast = CPPUTILS_NULL;
-        pcCommandLine = pcTmp;
+        pSrvParams->m_pcCommandLine = pcTmp;
         while ((*pcTmp)) { if (isspace(*pcTmp)) { pcLast = pcTmp; }  ++pcTmp; }
         if (pcLast) {
             *pcLast = '\0';
@@ -444,7 +447,7 @@ static SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPP
 
     fclose(fpConfFile);
 
-    if (!pcCommandLine) {
+    if (!(pSrvParams->m_pcCommandLine)) {
         // todo: report that no command is provided
         CloseHandle(pSrvParams->m_hStdOuts);
         free(pSrvParams->m_pcBuffer);
