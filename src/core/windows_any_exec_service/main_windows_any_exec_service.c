@@ -38,11 +38,14 @@ typedef struct SConfigParams {
     const char* m_pcServiceName;
     const char* m_pcCommandLine;
     const char* m_pcInit;
-    const char* m_pcExecFilePath;
-    const char* m_pcExecDirectory;
+    const char* m_pcClean;
+    const char* m_pcServiceFilePath;
+    const char* m_pcServiceDirectory;
+    const char* m_pcServiceFileName;
     char*       m_pcBuffer;
-    size_t      m_execFilePathLen;
-    size_t      m_execDirectoryLen;
+    size_t      m_serviceFilePathLen;
+    size_t      m_serviceDirectoryLen;
+    size_t      m_serviceFileNameLen;
     HANDLE      m_hStdOuts;
     HANDLE      m_inputPipe;
     char        m_cOption;  
@@ -231,11 +234,12 @@ static inline void MonitoringServiceMarkAsDoneInline(void) CPPUTILS_NOEXCEPT  {
 }
 
 
-static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
+
+static inline int CreateServiceProcessInline(const char* CPPUTILS_ARG_NN a_cpCmdLine, bool a_bIsService, HANDLE a_hStdOuts, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
 {
     STARTUPINFOA si;
     BOOL bCreateProcRet;
-    char* const pcCommandLine = _strdup(a_cpSrvParams->m_pcCommandLine);
+    char* const pcCommandLine = _strdup(a_cpCmdLine);
     BOOL bHandleInheritance;
     DWORD dwCreationFlags;
 
@@ -247,12 +251,12 @@ static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpS
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
 
-    if (a_cpSrvParams->m_bIsService) {
-        si.dwFlags |= (STARTF_USESHOWWINDOW| STARTF_USESTDHANDLES);
+    if (a_bIsService) {
+        si.dwFlags |= (STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES);
         si.wShowWindow = SW_HIDE;
         si.cb = sizeof(si);
-        si.hStdOutput = a_cpSrvParams->m_hStdOuts;
-        si.hStdError = a_cpSrvParams->m_hStdOuts;
+        si.hStdOutput = a_hStdOuts;
+        si.hStdError = a_hStdOuts;
         si.hStdInput = CPPUTILS_NULL;
         bHandleInheritance = TRUE;
         dwCreationFlags = CREATE_NO_WINDOW;
@@ -278,6 +282,13 @@ static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpS
     free(pcCommandLine);
 
     return bCreateProcRet ? 0 : 1;
+}
+
+
+
+static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
+{
+    return CreateServiceProcessInline(a_cpSrvParams->m_pcCommandLine, a_cpSrvParams->m_bIsService, a_cpSrvParams->m_hStdOuts, a_pProcInfo);
 }
 
 
@@ -477,21 +488,35 @@ static int InstallUninstallServiceStatic(const SConfigParams* CPPUTILS_ARG_NN a_
     if (schService) {
         SERVICE_STATUS servStat;
         ControlService(schService, SERVICE_CONTROL_STOP, &servStat);
+
+        if (a_cpSrvParams->m_pcClean && a_cpSrvParams->m_pcClean[0]) {
+            PROCESS_INFORMATION procInfo;
+            if (CreateServiceProcessInline(a_cpSrvParams->m_pcClean, false, a_cpSrvParams->m_hStdOuts, &procInfo)) {
+                fprintf(stderr, "Unable start clean scriptt(\"%s\")\n", a_cpSrvParams->m_pcClean);
+                fflush(stdout);
+            }
+            else {
+                WaitForSingleObject(procInfo.hProcess, INFINITE);
+                CloseHandle(procInfo.hThread);
+                CloseHandle(procInfo.hProcess);
+            }
+        }  //  if (a_cpSrvParams->m_pcInit && a_cpSrvParams->m_pcInit[0]) {
+
         DeleteService(schService);
     }  //  if (schService) {
     else {
-        char* const pcTemporarBuffer = (char*)malloc(32+ (size_t)(a_cpSrvParams->m_execFilePathLen));
+        char* const pcTemporarBuffer = (char*)malloc(32+ (size_t)(a_cpSrvParams->m_serviceFilePathLen));
         if (!pcTemporarBuffer) {
             CloseServiceHandle(schSCManager);
             fprintf(stderr, "Low memory!\n");
             return 1;
         }
         pcTemporarBuffer[0] = '\"';
-        memcpy(pcTemporarBuffer+1, a_cpSrvParams->m_pcExecFilePath, (size_t)(a_cpSrvParams->m_execFilePathLen));
-        pcTemporarBuffer[a_cpSrvParams->m_execFilePathLen + 1] = '\"';
-        pcTemporarBuffer[a_cpSrvParams->m_execFilePathLen + 2] = ' ';
-        pcTemporarBuffer[a_cpSrvParams->m_execFilePathLen + 3] = 's';
-        pcTemporarBuffer[a_cpSrvParams->m_execFilePathLen + 4] = '\0';
+        memcpy(pcTemporarBuffer+1, a_cpSrvParams->m_pcServiceFilePath, (size_t)(a_cpSrvParams->m_serviceFilePathLen));
+        pcTemporarBuffer[a_cpSrvParams->m_serviceFilePathLen + 1] = '\"';
+        pcTemporarBuffer[a_cpSrvParams->m_serviceFilePathLen + 2] = ' ';
+        pcTemporarBuffer[a_cpSrvParams->m_serviceFilePathLen + 3] = 's';
+        pcTemporarBuffer[a_cpSrvParams->m_serviceFilePathLen + 4] = '\0';
         schService = CreateServiceA(
             schSCManager,
             a_cpSrvParams->m_pcServiceName,
@@ -510,6 +535,20 @@ static int InstallUninstallServiceStatic(const SConfigParams* CPPUTILS_ARG_NN a_
         if (schService) {
             LPCSTR srvArgs[] = { "i", CPPUTILS_NULL };
             SC_ACTION scActions[3];
+
+            if (a_cpSrvParams->m_pcInit && a_cpSrvParams->m_pcInit[0]) {
+                PROCESS_INFORMATION procInfo;
+                if (CreateServiceProcessInline(a_cpSrvParams->m_pcInit, false, a_cpSrvParams->m_hStdOuts, &procInfo)) {
+                    fprintf(stderr, "Unable start init scriptt(\"%s\")\n", a_cpSrvParams->m_pcInit);
+                    fflush(stdout);
+                }
+                else {
+                    WaitForSingleObject(procInfo.hProcess, INFINITE);
+                    CloseHandle(procInfo.hThread);
+                    CloseHandle(procInfo.hProcess);
+                }
+            }  //  if (a_cpSrvParams->m_pcInit && a_cpSrvParams->m_pcInit[0]) {
+
             scActions[0].Type = SC_ACTION_RESTART;
             scActions[0].Delay = 5000;  // 5 seconds
             scActions[1].Type = SC_ACTION_RESTART;
@@ -576,12 +615,12 @@ static void ClearServiceParameters(const SConfigParams* CPPUTILS_ARG_NN a_pSrvPa
         free(a_pSrvParams->m_pcBuffer);
     }
 
-    if (a_pSrvParams->m_pcExecDirectory) {
-        free((char*)(a_pSrvParams->m_pcExecDirectory));
+    if (a_pSrvParams->m_pcServiceDirectory) {
+        free((char*)(a_pSrvParams->m_pcServiceDirectory));
     }
 
-    if (a_pSrvParams->m_pcExecFilePath) {
-        free((char*)(a_pSrvParams->m_pcExecFilePath));
+    if (a_pSrvParams->m_pcServiceFilePath) {
+        free((char*)(a_pSrvParams->m_pcServiceFilePath));
     }
 
     free((SConfigParams*)a_pSrvParams);
@@ -653,14 +692,18 @@ static inline char* FindElementByKeyInline(const char* CPPUTILS_ARG_NN a_key, ch
 }
 
 
+static int FindAndReplaceVariableStatic(const char* CPPUTILS_ARG_NN a_findStr, const char* CPPUTILS_ARG_NN a_replaceStr, size_t* CPPUTILS_ARG_NN a_wholeBufferLen_p, SConfigParams* CPPUTILS_ARG_NN a_pSrvParams) CPPUTILS_NOEXCEPT;
+static void FindAndTakeAllCommentsStatic(const char* CPPUTILS_ARG_NN a_start, const char* CPPUTILS_ARG_NN a_end, size_t a_wholeBufferLen, const SConfigParams* CPPUTILS_ARG_NN a_pSrvParams) CPPUTILS_NOEXCEPT;
+
+
 static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPPUTILS_NOEXCEPT
 {
-    size_t readCount;
+    size_t readCount, allocBufferSize;
     DWORD dwModuleFnameLen;
     struct _stat fStat;
     char vcBuffer[MAX_BUFFER_SIZE];
     errno_t fopenRet;
-    char* pcTmp, * pcExecDirectory;
+    char* pcTmp, * pcServiceDirectory;
     FILE* fpConfFile = CPPUTILS_NULL;
     SConfigParams* const pSrvParams = (SConfigParams*)calloc(1, sizeof(SConfigParams));
 
@@ -679,12 +722,12 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
         return CPPUTILS_NULL;
     }
 
-    pSrvParams->m_pcExecFilePath = _strdup(vcBuffer);
-    if (!(pSrvParams->m_pcExecFilePath)) {
+    pSrvParams->m_pcServiceFilePath = _strdup(vcBuffer);
+    if (!(pSrvParams->m_pcServiceFilePath)) {
         free(pSrvParams);
         return CPPUTILS_NULL;
     }
-    pSrvParams->m_execFilePathLen = (size_t)(dwModuleFnameLen);
+    pSrvParams->m_serviceFilePathLen = (size_t)(dwModuleFnameLen);
 
     pcTmp = strrchr(vcBuffer, '\\');
     if (!pcTmp) {
@@ -696,14 +739,17 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
         }
     }
 
-    pSrvParams->m_execDirectoryLen = (size_t)(pcTmp - vcBuffer);
-    pSrvParams->m_pcExecDirectory = pcExecDirectory = (char*)malloc(sizeof(char) * (pSrvParams->m_execDirectoryLen + 1));
-    if (!(pSrvParams->m_pcExecDirectory)) {
+    pSrvParams->m_serviceDirectoryLen = (size_t)(pcTmp - vcBuffer);
+    pSrvParams->m_pcServiceDirectory = pcServiceDirectory = (char*)malloc(sizeof(char) * (pSrvParams->m_serviceDirectoryLen + 1));
+    if (!(pSrvParams->m_pcServiceDirectory)) {
         free(pSrvParams);
         return CPPUTILS_NULL;
     }
-    memcpy(pcExecDirectory, vcBuffer, pSrvParams->m_execDirectoryLen);
-    pcExecDirectory[pSrvParams->m_execDirectoryLen] = 0;
+    memcpy(pcServiceDirectory, vcBuffer, pSrvParams->m_serviceDirectoryLen);
+    pcServiceDirectory[pSrvParams->m_serviceDirectoryLen] = 0;
+
+    pSrvParams->m_pcServiceFileName = pSrvParams->m_pcServiceFilePath + pSrvParams->m_serviceDirectoryLen + 1;
+    pSrvParams->m_serviceFileNameLen = pSrvParams->m_serviceFilePathLen - pSrvParams->m_serviceDirectoryLen - 1;
 
     if (pSrvParams->m_bIsService) {
         SECURITY_ATTRIBUTES sa;
@@ -737,7 +783,8 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
         return CPPUTILS_NULL;
     }
 
-    pSrvParams->m_pcBuffer = (char*)malloc(sizeof(char)*((size_t)fStat.st_size+4));
+    allocBufferSize = sizeof(char) * ((size_t)fStat.st_size + 8);
+    pSrvParams->m_pcBuffer = (char*)malloc(allocBufferSize);
     if (!(pSrvParams->m_pcBuffer)) {
         fclose(fpConfFile);
         ClearServiceParameters(pSrvParams);
@@ -752,6 +799,25 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
     }
     pSrvParams->m_pcBuffer[readCount] = 0;
 
+    FindAndTakeAllCommentsStatic("#", "\n", readCount + 1, pSrvParams);
+    FindAndTakeAllCommentsStatic("//", "\n", readCount + 1, pSrvParams);
+    FindAndTakeAllCommentsStatic("/*", "*/", readCount + 1, pSrvParams);
+
+    if (FindAndReplaceVariableStatic("${serviceDir}", pSrvParams->m_pcServiceDirectory,&allocBufferSize, pSrvParams)) {
+        ClearServiceParameters(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+
+    if (FindAndReplaceVariableStatic("${serviceFilePath}", pSrvParams->m_pcServiceFilePath, &allocBufferSize, pSrvParams)) {
+        ClearServiceParameters(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+
+    if (FindAndReplaceVariableStatic("${serviceFileName}", pSrvParams->m_pcServiceFilePath, &allocBufferSize, pSrvParams)) {
+        ClearServiceParameters(pSrvParams);
+        return CPPUTILS_NULL;
+    }
+
     pSrvParams->m_pcServiceName = FindElementByKeyInline("name", pSrvParams->m_pcBuffer, readCount);
     if (!(pSrvParams->m_pcServiceName)) {
         ClearServiceParameters(pSrvParams);
@@ -765,6 +831,64 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
     }
 
     pSrvParams->m_pcInit = FindElementByKeyInline("init", pSrvParams->m_pcBuffer, readCount);
+    pSrvParams->m_pcClean = FindElementByKeyInline("clean", pSrvParams->m_pcBuffer, readCount);
 
     return pSrvParams;
+}
+
+
+static int FindAndReplaceVariableStatic(const char* CPPUTILS_ARG_NN a_findStr, const char* CPPUTILS_ARG_NN a_replaceStr, size_t* CPPUTILS_ARG_NN a_wholeBufferLen_p, SConfigParams* CPPUTILS_ARG_NN a_pSrvParams) CPPUTILS_NOEXCEPT
+{
+    const size_t findStrLen = strlen(a_findStr);
+    const size_t replaceStrLen = strlen(a_replaceStr);
+    char* pcTmp = strstr(a_pSrvParams->m_pcBuffer,a_findStr);
+    while (pcTmp) {
+        if (findStrLen == replaceStrLen) {
+            memcpy(pcTmp, a_replaceStr, findStrLen);
+        }  //  if (findStrLen == replaceStrLen) {
+        else if (replaceStrLen > findStrLen) {
+            const size_t cunTmpOffset = (size_t)(pcTmp - a_pSrvParams->m_pcBuffer);
+            const size_t oldWholeBufferLen = *a_wholeBufferLen_p;
+            char* pTmpBuffer;
+            *a_wholeBufferLen_p = *a_wholeBufferLen_p + (replaceStrLen - findStrLen);
+            pTmpBuffer = (char*)realloc(a_pSrvParams->m_pcBuffer, *a_wholeBufferLen_p);
+            if (!pTmpBuffer) {
+                return 1;
+            }
+            a_pSrvParams->m_pcBuffer = pTmpBuffer;
+            pcTmp = a_pSrvParams->m_pcBuffer + cunTmpOffset;
+            memmove(pcTmp+ replaceStrLen, pcTmp+ findStrLen,(oldWholeBufferLen- cunTmpOffset - findStrLen));
+            memcpy(pcTmp, a_replaceStr, replaceStrLen);
+        }  //  else if (replaceStrLen > findStrLen) {
+        else {
+            const size_t cunTmpOffset = (size_t)(pcTmp - a_pSrvParams->m_pcBuffer);
+            memmove(pcTmp + replaceStrLen, pcTmp + findStrLen, (*a_wholeBufferLen_p - cunTmpOffset - findStrLen));
+            memcpy(pcTmp, a_replaceStr, replaceStrLen);
+        }  //  else of 'else if (replaceStrLen > findStrLen) {'
+        pcTmp += replaceStrLen;
+        pcTmp = strstr(pcTmp, a_findStr);
+    }  //  while (pcTmp) {
+    return 0;
+}
+
+
+static void FindAndTakeAllCommentsStatic(const char* CPPUTILS_ARG_NN a_start, const char* CPPUTILS_ARG_NN a_end, size_t a_wholeBufferLen, const SConfigParams* CPPUTILS_ARG_NN a_pSrvParams) CPPUTILS_NOEXCEPT
+{
+    const size_t startStrLen = strlen(a_start);
+    const size_t endStrLen = strlen(a_end);
+    char* pcTmpEnd;
+    char* pcTmpStart = strstr(a_pSrvParams->m_pcBuffer, a_start);
+    while (pcTmpStart) {
+        pcTmpEnd = strstr(pcTmpStart+ startStrLen,a_end);
+        if (pcTmpEnd) {
+            pcTmpEnd += endStrLen;
+            const size_t cunEndOffset = (size_t)(pcTmpEnd - a_pSrvParams->m_pcBuffer);
+            memmove(pcTmpStart, pcTmpEnd, a_wholeBufferLen- cunEndOffset);
+            pcTmpStart = strstr(pcTmpStart, a_start);
+        }
+        else {
+            *pcTmpStart = '\0';
+            break;
+        }
+    }  //  while (pcTmpStart) {
 }
