@@ -31,8 +31,10 @@
 #define CONFIG_FILE_NAME                    "config.conf"
 #define CONFIG_FILE_NAME_LEN_PLUS_1          sizeof(CONFIG_FILE_NAME)
 #ifndef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
-#define LOG_FILE_NAME             "servicelog.log"
-#define LOG_FILE_NAME_LEN_PLUS_1  sizeof(LOG_FILE_NAME)
+#define STDOUT_FILE_NAME             "stdout.log"
+#define STDOUT_FILE_NAME_LEN_PLUS_1  sizeof(STDOUT_FILE_NAME)
+#define STDERR_FILE_NAME             "stderr.log"
+#define STDERR_FILE_NAME_LEN_PLUS_1  sizeof(STDERR_FILE_NAME)
 #endif
 
 #ifndef container_of
@@ -52,9 +54,11 @@ typedef struct SConfigParams {
     size_t      m_serviceFilePathLen;
     size_t      m_serviceDirectoryLen;
     size_t      m_serviceFileNameLen;
-    HANDLE      m_hStdOuts;
+    HANDLE      m_hStdOut;
+    HANDLE      m_hStdErr;
 #ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
-    HANDLE      m_inputPipe;
+    HANDLE      m_inStdoutPairPipe;
+    HANDLE      m_inStderrPairPipe;
 #endif
     char        m_cOption;  
     bool        m_bIsService; 
@@ -255,7 +259,7 @@ static inline void MonitoringServiceMarkAsDoneInline(void) CPPUTILS_NOEXCEPT  {
 
 
 
-static inline int CreateServiceProcessInline(const char* CPPUTILS_ARG_NN a_cpCmdLine, bool a_bIsService, HANDLE a_hStdOuts, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
+static inline int CreateServiceProcessInline(const char* CPPUTILS_ARG_NN a_cpCmdLine, bool a_bIsService, HANDLE a_hStdOut, HANDLE a_hStdErr, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
 {
     STARTUPINFOA si;
     BOOL bCreateProcRet;
@@ -275,8 +279,8 @@ static inline int CreateServiceProcessInline(const char* CPPUTILS_ARG_NN a_cpCmd
         si.dwFlags |= (STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES);
         si.wShowWindow = SW_HIDE;
         si.cb = sizeof(si);
-        si.hStdOutput = a_hStdOuts;
-        si.hStdError = a_hStdOuts;
+        si.hStdOutput = a_hStdOut;
+        si.hStdError = a_hStdErr;
         si.hStdInput = CPPUTILS_NULL;
         bHandleInheritance = TRUE;
         dwCreationFlags = CREATE_NO_WINDOW;
@@ -308,7 +312,7 @@ static inline int CreateServiceProcessInline(const char* CPPUTILS_ARG_NN a_cpCmd
 
 static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
 {
-    return CreateServiceProcessInline(a_cpSrvParams->m_pcCommandLine, a_cpSrvParams->m_bIsService, a_cpSrvParams->m_hStdOuts, a_pProcInfo);
+    return CreateServiceProcessInline(a_cpSrvParams->m_pcCommandLine, a_cpSrvParams->m_bIsService, a_cpSrvParams->m_hStdOut, a_cpSrvParams->m_hStdErr, a_pProcInfo);
 }
 
 
@@ -519,7 +523,7 @@ static int InstallUninstallServiceStatic(const SConfigParams* CPPUTILS_ARG_NN a_
 
         if (a_cpSrvParams->m_pcClean && a_cpSrvParams->m_pcClean[0]) {
             PROCESS_INFORMATION procInfo;
-            if (CreateServiceProcessInline(a_cpSrvParams->m_pcClean, false, a_cpSrvParams->m_hStdOuts, &procInfo)) {
+            if (CreateServiceProcessInline(a_cpSrvParams->m_pcClean, false, a_cpSrvParams->m_hStdOut, a_cpSrvParams->m_hStdErr, &procInfo)) {
                 fprintf(stderr, "Unable start clean scriptt(\"%s\")\n", a_cpSrvParams->m_pcClean);
                 fflush(stdout);
             }
@@ -566,7 +570,7 @@ static int InstallUninstallServiceStatic(const SConfigParams* CPPUTILS_ARG_NN a_
 
             if (a_cpSrvParams->m_pcInit && a_cpSrvParams->m_pcInit[0]) {
                 PROCESS_INFORMATION procInfo;
-                if (CreateServiceProcessInline(a_cpSrvParams->m_pcInit, false, a_cpSrvParams->m_hStdOuts, &procInfo)) {
+                if (CreateServiceProcessInline(a_cpSrvParams->m_pcInit, false, a_cpSrvParams->m_hStdOut, a_cpSrvParams->m_hStdErr, &procInfo)) {
                     fprintf(stderr, "Unable start init scriptt(\"%s\")\n", a_cpSrvParams->m_pcInit);
                     fflush(stdout);
                 }
@@ -633,13 +637,21 @@ static void ClearServiceParameters(const SConfigParams* CPPUTILS_ARG_NN a_pSrvPa
 {
 
 #ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
-    if (a_pSrvParams->m_inputPipe) {
-        CloseHandle(a_pSrvParams->m_inputPipe);
+    if (a_pSrvParams->m_inStdoutPairPipe) {
+        CloseHandle(a_pSrvParams->m_inStdoutPairPipe);
+    }
+
+    if (a_pSrvParams->m_inStderrPairPipe) {
+        CloseHandle(a_pSrvParams->m_inStderrPairPipe);
     }
 #endif
     
-    if (a_pSrvParams->m_hStdOuts) {
-        CloseHandle(a_pSrvParams->m_hStdOuts);
+    if (a_pSrvParams->m_hStdOut) {
+        CloseHandle(a_pSrvParams->m_hStdOut);
+    }
+
+    if (a_pSrvParams->m_hStdErr) {
+        CloseHandle(a_pSrvParams->m_hStdErr);
     }
 
     if (a_pSrvParams->m_pcBuffer) {
@@ -800,8 +812,8 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
         // Ensure read handle is not inherited
         SetHandleInformation(pSrvParams->m_inputPipe, HANDLE_FLAG_INHERIT, 0);
 #else
-        memcpy(pcTmp + 1, LOG_FILE_NAME, LOG_FILE_NAME_LEN_PLUS_1);
-        pSrvParams->m_hStdOuts = CreateFileA(
+        memcpy(pcTmp + 1, STDOUT_FILE_NAME, STDOUT_FILE_NAME_LEN_PLUS_1);
+        pSrvParams->m_hStdOut = CreateFileA(
             vcBuffer,
             FILE_APPEND_DATA,
             FILE_SHARE_WRITE | FILE_SHARE_READ,
@@ -809,9 +821,23 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
             OPEN_ALWAYS,
             FILE_ATTRIBUTE_NORMAL,
             NULL);
+        if ((!pSrvParams->m_hStdOut) || ((pSrvParams->m_hStdOut) == INVALID_HANDLE_VALUE)) {
+            pSrvParams->m_hStdOut = CPPUTILS_NULL;
+            ClearServiceParameters(pSrvParams);
+            return CPPUTILS_NULL;
+        }
 
-        if ((!pSrvParams->m_hStdOuts) || ((pSrvParams->m_hStdOuts) == INVALID_HANDLE_VALUE)) {
-            pSrvParams->m_hStdOuts = CPPUTILS_NULL;
+        memcpy(pcTmp + 1, STDERR_FILE_NAME, STDERR_FILE_NAME_LEN_PLUS_1);
+        pSrvParams->m_hStdErr = CreateFileA(
+            vcBuffer,
+            FILE_APPEND_DATA,
+            FILE_SHARE_WRITE | FILE_SHARE_READ,
+            &sa,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            NULL);
+        if ((!pSrvParams->m_hStdErr) || ((pSrvParams->m_hStdErr) == INVALID_HANDLE_VALUE)) {
+            pSrvParams->m_hStdErr = CPPUTILS_NULL;
             ClearServiceParameters(pSrvParams);
             return CPPUTILS_NULL;
         }
