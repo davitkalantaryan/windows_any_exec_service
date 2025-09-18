@@ -18,25 +18,31 @@
 #include <ctype.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <fcntl.h>
+#include <io.h>
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <Windows.h>
 #include <cinternal/undisable_compiler_warnings.h>
 
-#define READ_BUFFER_SIZE_MIN1   2046
-#define READ_BUFFER_SIZE        2047
+#define READ_BUFFER_SIZE_MIN1   2047
+#define READ_BUFFER_SIZE        2048
 #define MAX_BUFFER_SIZE_TRM1    4096
 #define MAX_BUFFER_SIZE_MIN_1   8191
 #define MAX_BUFFER_SIZE         8192
 #define CONFIG_FILE_NAME                    "config.conf"
 #define CONFIG_FILE_NAME_LEN_PLUS_1          sizeof(CONFIG_FILE_NAME)
-#ifndef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
-#define LOG_FILE_NAME             "servicelog.log"
-#define LOG_FILE_NAME_LEN_PLUS_1  sizeof(LOG_FILE_NAME)
-#endif
-
+#ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
 #ifndef container_of
 #define container_of(_ptr,_type,_member) (_type*)(  ((char*)(_ptr)) + (size_t)( (char*)(&((_type *)0)->_member) )  )
+#endif
+#else
+#define STDOUT_FILE_NAME             "stdout.log"
+#define STDOUT_FILE_NAME_LEN_PLUS_1  sizeof(STDOUT_FILE_NAME)
+#define STDWRN_FILE_NAME             "stdwrn.log"
+#define STDWRN_FILE_NAME_LEN_PLUS_1  sizeof(STDWRN_FILE_NAME)
+#define STDERR_FILE_NAME             "stderr.log"
+#define STDERR_FILE_NAME_LEN_PLUS_1  sizeof(STDERR_FILE_NAME)
 #endif
 
 
@@ -52,22 +58,30 @@ typedef struct SConfigParams {
     size_t      m_serviceFilePathLen;
     size_t      m_serviceDirectoryLen;
     size_t      m_serviceFileNameLen;
-    HANDLE      m_hStdOuts;
+    HANDLE      m_hStdOut;
+    HANDLE      m_hStdWrn;
+    HANDLE      m_hStdErr;
 #ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
-    HANDLE      m_inputPipe;
+    HANDLE      m_inStdoutPairPipe;
+    HANDLE      m_inStdwrnPairPipe;
+    HANDLE      m_inStderrPairPipe;
+    HANDLE      m_hEventSource;
 #endif
     char        m_cOption;  
     bool        m_bIsService; 
     bool        reserved02[sizeof(void*)-sizeof(bool)-sizeof(char)];
 } SConfigParams;
 
+#ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
 typedef struct SOverlappedStr {
     OVERLAPPED                  m_overlapped;
-    HANDLE                      m_hEventSource;
     const struct SConfigParams* m_cpSrvParams;
-    bool                        m_bContinueOverrlapped;
-    char                        m_buffer[READ_BUFFER_SIZE];
+    size_t                      m_bufferIndex;
+    WORD                        m_wType;
+    WORD                        m_reserved01[3];
+    char                        m_buffers[2][READ_BUFFER_SIZE];
 }SOverlappedStr;
+#endif
 
 
 #ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
@@ -138,6 +152,15 @@ int main(int a_argc, char* a_argv[])
             ClearServiceParameters(pSrvParams);
             ExitProcess(1);
         }
+        break;
+    case 't':
+#ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
+        pipeThreadHandle = CreateThread(CPPUTILS_NULL, 0, &PipeReadThreadProcStatic, (SConfigParams*)pSrvParams, 0, &s_dwPipeThreadId);
+        if (!pipeThreadHandle) {
+            ClearServiceParameters(pSrvParams);
+            ExitProcess(1);
+        }
+#endif
         break;
     default: // we have installation or uninstallation
         nCreateProcRet = InstallUninstallServiceStatic(pSrvParams);
@@ -255,7 +278,7 @@ static inline void MonitoringServiceMarkAsDoneInline(void) CPPUTILS_NOEXCEPT  {
 
 
 
-static inline int CreateServiceProcessInline(const char* CPPUTILS_ARG_NN a_cpCmdLine, bool a_bIsService, HANDLE a_hStdOuts, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
+static inline int CreateServiceProcessInline(const char* CPPUTILS_ARG_NN a_cpCmdLine, bool a_bIsService, HANDLE a_hStdOut, HANDLE a_hStdErr, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
 {
     STARTUPINFOA si;
     BOOL bCreateProcRet;
@@ -275,8 +298,8 @@ static inline int CreateServiceProcessInline(const char* CPPUTILS_ARG_NN a_cpCmd
         si.dwFlags |= (STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES);
         si.wShowWindow = SW_HIDE;
         si.cb = sizeof(si);
-        si.hStdOutput = a_hStdOuts;
-        si.hStdError = a_hStdOuts;
+        si.hStdOutput = a_hStdOut;
+        si.hStdError = a_hStdErr;
         si.hStdInput = CPPUTILS_NULL;
         bHandleInheritance = TRUE;
         dwCreationFlags = CREATE_NO_WINDOW;
@@ -308,7 +331,7 @@ static inline int CreateServiceProcessInline(const char* CPPUTILS_ARG_NN a_cpCmd
 
 static int CreateServiceProcessStatic(const SConfigParams* CPPUTILS_ARG_NN a_cpSrvParams, PROCESS_INFORMATION* CPPUTILS_ARG_NN a_pProcInfo) CPPUTILS_NOEXCEPT
 {
-    return CreateServiceProcessInline(a_cpSrvParams->m_pcCommandLine, a_cpSrvParams->m_bIsService, a_cpSrvParams->m_hStdOuts, a_pProcInfo);
+    return CreateServiceProcessInline(a_cpSrvParams->m_pcCommandLine, a_cpSrvParams->m_bIsService, a_cpSrvParams->m_hStdOut, a_cpSrvParams->m_hStdWrn, a_pProcInfo);
 }
 
 
@@ -446,52 +469,62 @@ static VOID WINAPI OverlappedCompletionRoutineStatic(_In_ DWORD a_dwErrorCode, _
 {
     SOverlappedStr* const pOverlappedStr = container_of(a_lpOverlapped, SOverlappedStr, m_overlapped);
     (void)a_dwErrorCode;
-    if (a_dwNumberOfBytesTransfered > 0) {
-        LPCSTR strings[1] = { pOverlappedStr->m_buffer };
-        pOverlappedStr->m_buffer[a_dwNumberOfBytesTransfered] = '\0';
+    if ((a_dwNumberOfBytesTransfered > 0) && strncmp(pOverlappedStr->m_buffers[0], pOverlappedStr->m_buffers[1], READ_BUFFER_SIZE_MIN1)) {
+        LPCSTR strings[1] = { pOverlappedStr->m_buffers[pOverlappedStr->m_bufferIndex] };
+        (pOverlappedStr->m_buffers[pOverlappedStr->m_bufferIndex])[a_dwNumberOfBytesTransfered] = '\0';
 
-        ReportEventA(pOverlappedStr->m_hEventSource,
-            EVENTLOG_INFORMATION_TYPE,
+        ReportEventA(
+            pOverlappedStr->m_cpSrvParams->m_hEventSource,
+            pOverlappedStr->m_wType,
             0,
             0,
             NULL,
             1,
-            0,
+            a_dwNumberOfBytesTransfered,
             strings,
-            NULL);
+            pOverlappedStr->m_buffers[pOverlappedStr->m_bufferIndex]);
+
+        pOverlappedStr->m_bufferIndex = (pOverlappedStr->m_bufferIndex + 1) % 2;
     }  //   if (a_dwNumberOfBytesTransfered > 0) {
 
     if (s_bShoodWork) {
         ZeroMemory(a_lpOverlapped, sizeof(OVERLAPPED));
-        if (!ReadFileEx(pOverlappedStr->m_cpSrvParams->m_inputPipe, pOverlappedStr->m_buffer, READ_BUFFER_SIZE_MIN1, a_lpOverlapped, &OverlappedCompletionRoutineStatic)) {
-            pOverlappedStr->m_bContinueOverrlapped = false;
-        }  //  if (!ReadFileEx(pOverlappedStr->m_cpSrvParams->m_inputPipe, pOverlappedStr->m_buffer, READ_BUFFER_SIZE_MIN1, a_lpOverlapped, &OverlappedCompletionRoutineStatic)) {
     }  // if (s_bShoodWork) {
 }
 
 
 static DWORD WINAPI PipeReadThreadProcStatic(_In_ LPVOID a_pArg) CPPUTILS_NOEXCEPT
 {
-    SOverlappedStr ovrlpdStr;
     const SConfigParams* const cpSrvParams = (SConfigParams*)a_pArg;
-    
-    ZeroMemory(&ovrlpdStr, sizeof(ovrlpdStr));
-    ovrlpdStr.m_hEventSource = RegisterEventSourceA(CPPUTILS_NULL, cpSrvParams->m_pcServiceName);
 
-    if (ovrlpdStr.m_hEventSource) {
+    if (cpSrvParams->m_hEventSource) {
+        SOverlappedStr ovrlpdOutStr, ovrlpdWrnStr, ovrlpdErrStr;
+
+        ZeroMemory(&ovrlpdOutStr, sizeof(ovrlpdOutStr));
+        ZeroMemory(&ovrlpdWrnStr, sizeof(ovrlpdOutStr));
+        ZeroMemory(&ovrlpdErrStr, sizeof(ovrlpdErrStr));
         
-        ovrlpdStr.m_cpSrvParams = cpSrvParams;
-        ovrlpdStr.m_bContinueOverrlapped = true;
+        ovrlpdOutStr.m_cpSrvParams = cpSrvParams;
+        ovrlpdWrnStr.m_cpSrvParams = cpSrvParams;
+        ovrlpdErrStr.m_cpSrvParams = cpSrvParams;
+        ovrlpdOutStr.m_wType = EVENTLOG_INFORMATION_TYPE;
+        ovrlpdWrnStr.m_wType = EVENTLOG_WARNING_TYPE;
+        ovrlpdErrStr.m_wType = EVENTLOG_ERROR_TYPE;
 
-        if (ReadFileEx(cpSrvParams->m_inputPipe, ovrlpdStr.m_buffer, READ_BUFFER_SIZE_MIN1, &(ovrlpdStr.m_overlapped), &OverlappedCompletionRoutineStatic)) {
-            while (s_bShoodWork && (ovrlpdStr.m_bContinueOverrlapped)) {
-                SleepEx(INFINITE, TRUE);
-            }  //  while (s_bShoodWork && (ovrlpdStr.m_bContinueOverrlapped)) {
+        while (
+            s_bShoodWork && 
+            ReadFileEx(cpSrvParams->m_inStdoutPairPipe, ovrlpdOutStr.m_buffers[ovrlpdOutStr.m_bufferIndex], READ_BUFFER_SIZE_MIN1, &(ovrlpdOutStr.m_overlapped), &OverlappedCompletionRoutineStatic) &&
+            ReadFileEx(cpSrvParams->m_inStdwrnPairPipe, ovrlpdWrnStr.m_buffers[ovrlpdWrnStr.m_bufferIndex], READ_BUFFER_SIZE_MIN1, &(ovrlpdWrnStr.m_overlapped), &OverlappedCompletionRoutineStatic) &&
+            ReadFileEx(cpSrvParams->m_inStderrPairPipe, ovrlpdErrStr.m_buffers[ovrlpdErrStr.m_bufferIndex], READ_BUFFER_SIZE_MIN1, &(ovrlpdErrStr.m_overlapped), &OverlappedCompletionRoutineStatic)  )
+        {
+            SleepEx(INFINITE, TRUE);
         }
 
-        DeregisterEventSource(ovrlpdStr.m_hEventSource);
+        CancelIo(cpSrvParams->m_inStdoutPairPipe);
+        CancelIo(cpSrvParams->m_inStdwrnPairPipe);
+        CancelIo(cpSrvParams->m_inStderrPairPipe);
 
-    }  //  if (ovrlpdStr.m_hEventSource) {
+    }  //  if (cpSrvParams->m_hEventSource) {
 
     return 0;
 }
@@ -519,7 +552,7 @@ static int InstallUninstallServiceStatic(const SConfigParams* CPPUTILS_ARG_NN a_
 
         if (a_cpSrvParams->m_pcClean && a_cpSrvParams->m_pcClean[0]) {
             PROCESS_INFORMATION procInfo;
-            if (CreateServiceProcessInline(a_cpSrvParams->m_pcClean, false, a_cpSrvParams->m_hStdOuts, &procInfo)) {
+            if (CreateServiceProcessInline(a_cpSrvParams->m_pcClean, false, a_cpSrvParams->m_hStdOut, a_cpSrvParams->m_hStdWrn, &procInfo)) {
                 fprintf(stderr, "Unable start clean scriptt(\"%s\")\n", a_cpSrvParams->m_pcClean);
                 fflush(stdout);
             }
@@ -566,7 +599,7 @@ static int InstallUninstallServiceStatic(const SConfigParams* CPPUTILS_ARG_NN a_
 
             if (a_cpSrvParams->m_pcInit && a_cpSrvParams->m_pcInit[0]) {
                 PROCESS_INFORMATION procInfo;
-                if (CreateServiceProcessInline(a_cpSrvParams->m_pcInit, false, a_cpSrvParams->m_hStdOuts, &procInfo)) {
+                if (CreateServiceProcessInline(a_cpSrvParams->m_pcInit, false, a_cpSrvParams->m_hStdOut, a_cpSrvParams->m_hStdWrn, &procInfo)) {
                     fprintf(stderr, "Unable start init scriptt(\"%s\")\n", a_cpSrvParams->m_pcInit);
                     fflush(stdout);
                 }
@@ -629,17 +662,64 @@ static inline char* MemMemInline(const char* CPPUTILS_ARG_NN a_key, size_t a_key
 }
 
 
+static inline void redirect_cruntime_stdoutorerr_to_handle_inline(HANDLE a_hOut, FILE* CPPUTILS_ARG_NN a_outorerr) CPPUTILS_NOEXCEPT {
+    int fd;
+    
+    fflush(a_outorerr);
+
+    // Wrap HANDLE with a CRT fd and dup onto stdout.
+    fd = _open_osfhandle((intptr_t)a_hOut, _O_WRONLY | _O_TEXT);
+    if (fd == -1) return;
+
+    if (_dup2(fd, _fileno(a_outorerr)) != 0) {
+        _close(fd);
+        return;
+    }
+
+    // We can close the temp fd; stdout now references the same OS handle.
+    _close(fd);
+
+    // Optional: immediate flushing for logs.
+    setvbuf(a_outorerr, NULL, _IONBF, 0);
+}
+
+
 static void ClearServiceParameters(const SConfigParams* CPPUTILS_ARG_NN a_pSrvParams) CPPUTILS_NOEXCEPT
 {
 
 #ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
-    if (a_pSrvParams->m_inputPipe) {
-        CloseHandle(a_pSrvParams->m_inputPipe);
+
+    if (a_pSrvParams->m_hEventSource) {
+        DeregisterEventSource(a_pSrvParams->m_hEventSource);
     }
+
+    if (a_pSrvParams->m_inStdoutPairPipe) {
+        DisconnectNamedPipe(a_pSrvParams->m_inStdoutPairPipe);
+        CloseHandle(a_pSrvParams->m_inStdoutPairPipe);
+    }
+
+    if (a_pSrvParams->m_inStdwrnPairPipe) {
+        DisconnectNamedPipe(a_pSrvParams->m_inStdwrnPairPipe);
+        CloseHandle(a_pSrvParams->m_inStdwrnPairPipe);
+    }
+
+    if (a_pSrvParams->m_inStderrPairPipe) {
+        DisconnectNamedPipe(a_pSrvParams->m_inStderrPairPipe);
+        CloseHandle(a_pSrvParams->m_inStderrPairPipe);
+    }
+
 #endif
     
-    if (a_pSrvParams->m_hStdOuts) {
-        CloseHandle(a_pSrvParams->m_hStdOuts);
+    if (a_pSrvParams->m_hStdOut) {
+        CloseHandle(a_pSrvParams->m_hStdOut);
+    }
+
+    if (a_pSrvParams->m_hStdWrn) {
+        CloseHandle(a_pSrvParams->m_hStdWrn);
+    }
+
+    if (a_pSrvParams->m_hStdErr) {
+        CloseHandle(a_pSrvParams->m_hStdErr);
     }
 
     if (a_pSrvParams->m_pcBuffer) {
@@ -727,6 +807,70 @@ static int FindAndReplaceVariableStatic(const char* CPPUTILS_ARG_NN a_findStr, c
 static void FindAndTakeAllCommentsStatic(const char* CPPUTILS_ARG_NN a_start, const char* CPPUTILS_ARG_NN a_end, size_t a_wholeBufferLen, const SConfigParams* CPPUTILS_ARG_NN a_pSrvParams) CPPUTILS_NOEXCEPT;
 
 
+#ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
+
+static inline int CreateOverlappedPipesStatic(const char* CPPUTILS_ARG_NN a_cpcNameHint, HANDLE* CPPUTILS_ARG_NN a_hReadPipe_p, HANDLE* CPPUTILS_ARG_NN a_hWritePipe_p) CPPUTILS_NOEXCEPT
+{
+    BOOL bPipeConnectRet;
+    SECURITY_ATTRIBUTES sa;
+    char vcPipeName[READ_BUFFER_SIZE];
+    
+    _snprintf_s(vcPipeName, READ_BUFFER_SIZE_MIN1, READ_BUFFER_SIZE, "\\\\.\\pipe\\%s_%08lx_%08lx_%08lx", a_cpcNameHint, GetCurrentProcessId(), GetTickCount(), GetCurrentThreadId());
+
+    ZeroMemory(&sa, sizeof(sa));
+    sa.nLength = sizeof(sa);
+    *a_hReadPipe_p = CreateNamedPipeA(
+        vcPipeName,
+        PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+        PIPE_TYPE_MESSAGE | PIPE_WAIT | PIPE_READMODE_MESSAGE,
+        1,                  // max instances
+        0,                  // out buffer size
+        0,                  // in buffer size
+        0,                  // default timeout
+        &sa
+    );
+    if (((*a_hReadPipe_p) == INVALID_HANDLE_VALUE)||(!(*a_hReadPipe_p))) {
+        *a_hReadPipe_p = CPPUTILS_NULL;
+        return 1;
+    }
+
+    sa.bInheritHandle = TRUE;
+    *a_hWritePipe_p = CreateFileA(
+        vcPipeName,
+        GENERIC_WRITE,
+        FILE_SHARE_WRITE,                  // no sharing
+        &sa,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
+        NULL
+    );
+    if (((*a_hWritePipe_p) == INVALID_HANDLE_VALUE) || (!(*a_hWritePipe_p))) {
+        CloseHandle(*a_hReadPipe_p);
+        *a_hReadPipe_p = CPPUTILS_NULL;
+        *a_hWritePipe_p = CPPUTILS_NULL;
+        return 1;
+    }
+
+    bPipeConnectRet = ConnectNamedPipe(*a_hReadPipe_p, CPPUTILS_NULL);
+    if (bPipeConnectRet) {
+        return 0;
+    }
+
+    if (GetLastError() == ERROR_PIPE_CONNECTED) {
+        return 0;  // child connected first, treat as success
+    }
+
+    CloseHandle(*a_hReadPipe_p);
+    CloseHandle(*a_hWritePipe_p);
+    *a_hReadPipe_p = CPPUTILS_NULL;
+    *a_hWritePipe_p = CPPUTILS_NULL;
+    return 1;
+
+}
+
+#endif  //  #ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
+
+
 static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[]) CPPUTILS_NOEXCEPT
 {
     size_t readCount, allocBufferSize;
@@ -744,7 +888,7 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
     }
 
     pSrvParams->m_cOption = (a_argc > 1) ? a_argv[1][0] : 'i';
-    pSrvParams->m_bIsService = ((pSrvParams->m_cOption) == 's');
+    pSrvParams->m_bIsService = (((pSrvParams->m_cOption) == 's')|| ((pSrvParams->m_cOption) == 't'));
 
     dwModuleFnameLen = GetModuleFileNameA(CPPUTILS_NULL, vcBuffer, MAX_BUFFER_SIZE_TRM1);
     if (!dwModuleFnameLen) {
@@ -783,25 +927,45 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
     pSrvParams->m_serviceFileNameLen = pSrvParams->m_serviceFilePathLen - pSrvParams->m_serviceDirectoryLen - 1;
 
     if (pSrvParams->m_bIsService) {
+
+#ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
+
+        SOverlappedStr ovrlpdOutStr, ovrlpdErrStr;
+
+        ZeroMemory(&ovrlpdOutStr, sizeof(ovrlpdOutStr));
+        ZeroMemory(&ovrlpdErrStr, sizeof(ovrlpdErrStr));
+
+        ovrlpdOutStr.m_cpSrvParams = pSrvParams;
+        ovrlpdErrStr.m_cpSrvParams = pSrvParams;
+        ovrlpdOutStr.m_wType = EVENTLOG_INFORMATION_TYPE;
+        ovrlpdErrStr.m_wType = EVENTLOG_WARNING_TYPE;
+
+        if (CreateOverlappedPipesStatic("stdout",&(pSrvParams->m_inStdoutPairPipe), &(pSrvParams->m_hStdOut))) {
+            ClearServiceParameters(pSrvParams);
+            return CPPUTILS_NULL;
+        }
+
+        if (CreateOverlappedPipesStatic("stdwrn",&(pSrvParams->m_inStdwrnPairPipe), &(pSrvParams->m_hStdWrn))) {
+            ClearServiceParameters(pSrvParams);
+            return CPPUTILS_NULL;
+        }
+
+        if (CreateOverlappedPipesStatic("stderr", &(pSrvParams->m_inStderrPairPipe), &(pSrvParams->m_hStdErr))) {
+            ClearServiceParameters(pSrvParams);
+            return CPPUTILS_NULL;
+        }
+        
+        // Ensure read handle is not inherited
+        //SetHandleInformation(pSrvParams->m_inputPipe, HANDLE_FLAG_INHERIT, 0);
+#else
+
         SECURITY_ATTRIBUTES sa;
         ZeroMemory(&sa, sizeof(sa));
         sa.nLength = sizeof(SECURITY_ATTRIBUTES);
         sa.bInheritHandle = TRUE;
 
-#ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
-        if (!CreatePipe(&(pSrvParams->m_inputPipe), &(pSrvParams->m_hStdOuts), &sa, 0)) {
-            pSrvParams->m_hStdOuts = CPPUTILS_NULL;
-            pSrvParams->m_inputPipe = CPPUTILS_NULL;
-            ClearServiceParameters(pSrvParams);
-            return CPPUTILS_NULL;
-        }
-        SetStdHandle(STD_OUTPUT_HANDLE, pSrvParams->m_hStdOuts);
-        SetStdHandle(STD_ERROR_HANDLE, pSrvParams->m_hStdOuts);
-        // Ensure read handle is not inherited
-        SetHandleInformation(pSrvParams->m_inputPipe, HANDLE_FLAG_INHERIT, 0);
-#else
-        memcpy(pcTmp + 1, LOG_FILE_NAME, LOG_FILE_NAME_LEN_PLUS_1);
-        pSrvParams->m_hStdOuts = CreateFileA(
+        memcpy(pcTmp + 1, STDOUT_FILE_NAME, STDOUT_FILE_NAME_LEN_PLUS_1);
+        pSrvParams->m_hStdOut = CreateFileA(
             vcBuffer,
             FILE_APPEND_DATA,
             FILE_SHARE_WRITE | FILE_SHARE_READ,
@@ -809,13 +973,49 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
             OPEN_ALWAYS,
             FILE_ATTRIBUTE_NORMAL,
             NULL);
-
-        if ((!pSrvParams->m_hStdOuts) || ((pSrvParams->m_hStdOuts) == INVALID_HANDLE_VALUE)) {
-            pSrvParams->m_hStdOuts = CPPUTILS_NULL;
+        if ((!pSrvParams->m_hStdOut) || ((pSrvParams->m_hStdOut) == INVALID_HANDLE_VALUE)) {
+            pSrvParams->m_hStdOut = CPPUTILS_NULL;
             ClearServiceParameters(pSrvParams);
             return CPPUTILS_NULL;
         }
+
+        memcpy(pcTmp + 1, STDWRN_FILE_NAME, STDWRN_FILE_NAME_LEN_PLUS_1);
+        pSrvParams->m_hStdWrn = CreateFileA(
+            vcBuffer,
+            FILE_APPEND_DATA,
+            FILE_SHARE_WRITE | FILE_SHARE_READ,
+            &sa,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            NULL);
+        if ((!pSrvParams->m_hStdWrn) || ((pSrvParams->m_hStdWrn) == INVALID_HANDLE_VALUE)) {
+            pSrvParams->m_hStdWrn = CPPUTILS_NULL;
+            ClearServiceParameters(pSrvParams);
+            return CPPUTILS_NULL;
+        }
+
+        memcpy(pcTmp + 1, STDERR_FILE_NAME, STDERR_FILE_NAME_LEN_PLUS_1);
+        pSrvParams->m_hStdErr = CreateFileA(
+            vcBuffer,
+            FILE_APPEND_DATA,
+            FILE_SHARE_WRITE | FILE_SHARE_READ,
+            &sa,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            NULL);
+        if ((!pSrvParams->m_hStdErr) || ((pSrvParams->m_hStdErr) == INVALID_HANDLE_VALUE)) {
+            pSrvParams->m_hStdErr = CPPUTILS_NULL;
+            ClearServiceParameters(pSrvParams);
+            return CPPUTILS_NULL;
+        }
+
 #endif
+
+        SetStdHandle(STD_OUTPUT_HANDLE, pSrvParams->m_hStdOut);
+        SetStdHandle(STD_ERROR_HANDLE, pSrvParams->m_hStdErr);
+        redirect_cruntime_stdoutorerr_to_handle_inline(pSrvParams->m_hStdOut, stdout);
+        redirect_cruntime_stdoutorerr_to_handle_inline(pSrvParams->m_hStdErr, stderr);
+
     }  //  if (pSrvParams->m_bIsService) {
 
     memcpy(pcTmp + 1, CONFIG_FILE_NAME, CONFIG_FILE_NAME_LEN_PLUS_1);
@@ -881,6 +1081,12 @@ static const SConfigParams* GetServiceParametersStatic(int a_argc, char* a_argv[
 
     pSrvParams->m_pcInit = FindElementByKeyInline("init", pSrvParams->m_pcBuffer, readCount);
     pSrvParams->m_pcClean = FindElementByKeyInline("clean", pSrvParams->m_pcBuffer, readCount);
+
+#ifdef USE_PIPE_FOR_SERVICE_STD_OUT_AND_ERR
+    if (pSrvParams->m_bIsService) {
+        pSrvParams->m_hEventSource = RegisterEventSourceA(CPPUTILS_NULL, pSrvParams->m_pcServiceName);
+    }
+#endif
 
     return pSrvParams;
 }
